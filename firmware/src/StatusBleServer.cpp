@@ -9,6 +9,16 @@ constexpr uint32_t kAdvertiseCheckIntervalMs = 1000;
 void StatusBleServer::begin(const Config &config) {
   config_ = config;
 
+  Serial.println("BLE init");
+  Serial.print("  device: ");
+  Serial.println(config_.deviceName);
+  Serial.print("  service: ");
+  Serial.println(config_.serviceUuid);
+  Serial.print("  rx: ");
+  Serial.println(config_.rxCharacteristicUuid);
+  Serial.print("  tx: ");
+  Serial.println(config_.txCharacteristicUuid);
+
   // 初始化 BLE 协议栈，并设置设备名。
   // 这个名字会出现在电脑端的蓝牙扫描结果里。
   NimBLEDevice::init(config_.deviceName);
@@ -129,6 +139,9 @@ void StatusBleServer::startAdvertising() {
   // 开始广播。此后电脑端就可以扫描到并主动连接。
   NimBLEDevice::startAdvertising();
   advertising_ = true;
+
+  Serial.print("BLE advertising as ");
+  Serial.println(config_.deviceName);
 }
 
 void StatusBleServer::onConnect(NimBLEServer *server) {
@@ -136,6 +149,7 @@ void StatusBleServer::onConnect(NimBLEServer *server) {
   // BLE 外设通常同一时间只服务一个中心设备，这对桌面状态卡足够。
   connected_ = true;
   advertising_ = false;
+  Serial.println("BLE connected");
 }
 
 void StatusBleServer::onDisconnect(NimBLEServer *server) {
@@ -143,6 +157,7 @@ void StatusBleServer::onDisconnect(NimBLEServer *server) {
   // 这样电脑端客户端重启后可以再次发现设备。
   connected_ = false;
   advertising_ = false;
+  Serial.println("BLE disconnected");
   startAdvertising();
 }
 
@@ -155,5 +170,7 @@ void StatusBleServer::onWrite(NimBLECharacteristic *characteristic) {
 
   // NimBLE 返回 std::string。这里转换成 Arduino String，方便主程序处理。
   std::string value = characteristic->getValue();
+  Serial.print("BLE write bytes: ");
+  Serial.println(value.length());
   messageHandler_(String(value.c_str()));
 }

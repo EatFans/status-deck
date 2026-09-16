@@ -30,6 +30,7 @@ desktop/
 ```bash
 status-deck run
 status-deck scan
+status-deck scan --all --timeout 10s
 status-deck version
 ```
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -46,6 +47,7 @@ func printUsage() {
 	fmt.Println("Usage:")
 	fmt.Println("  status-deck run      Start the desktop sync loop")
 	fmt.Println("  status-deck scan     Scan for Status Deck devices")
+	fmt.Println("  status-deck scan --all --timeout 10s")
 	fmt.Println("  status-deck version  Print version")
 }
 
@@ -99,15 +101,32 @@ func scan() error {
 	ctx, stop := signalContext()
 	defer stop()
 
+	flags := flag.NewFlagSet("scan", flag.ContinueOnError)
+	includeAll := flags.Bool("all", false, "show all nearby BLE devices instead of only Status Deck")
+	includeUnnamed := flags.Bool("unnamed", false, "include unnamed devices when used with --all")
+	timeout := flags.Duration("timeout", 5*time.Second, "scan timeout")
+	if err := flags.Parse(os.Args[2:]); err != nil {
+		return err
+	}
+
 	cfg := config.Default()
 	client := ble.NewClient(cfg.BLE)
-	devices, err := client.Scan(ctx, 5*time.Second)
+	devices, err := client.ScanWithOptions(ctx, ble.ScanOptions{
+		Timeout:       *timeout,
+		IncludeAll:    *includeAll,
+		IncludeUnnamed: *includeUnnamed,
+	})
 	if err != nil {
 		return err
 	}
 
 	if len(devices) == 0 {
-		fmt.Println("No Status Deck devices found")
+		if *includeAll {
+			fmt.Println("No BLE devices found")
+		} else {
+			fmt.Println("No Status Deck devices found")
+			fmt.Println("Tip: run `status-deck scan --all --timeout 10s` to check whether Bluetooth scanning works.")
+		}
 		return nil
 	}
 

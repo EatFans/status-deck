@@ -28,6 +28,12 @@ type Device struct {
 	RSSI int
 }
 
+type ScanOptions struct {
+	Timeout       time.Duration
+	IncludeAll    bool
+	IncludeUnnamed bool
+}
+
 type Client struct {
 	config Config
 	adapter *bluetooth.Adapter
@@ -41,8 +47,16 @@ func NewClient(config Config) *Client {
 }
 
 func (c *Client) Scan(ctx context.Context, timeout time.Duration) ([]Device, error) {
+	return c.ScanWithOptions(ctx, ScanOptions{Timeout: timeout})
+}
+
+func (c *Client) ScanWithOptions(ctx context.Context, options ScanOptions) ([]Device, error) {
 	if err := c.adapter.Enable(); err != nil {
 		return nil, fmt.Errorf("enable BLE adapter: %w", err)
+	}
+
+	if options.Timeout <= 0 {
+		options.Timeout = 5 * time.Second
 	}
 
 	serviceUUID, err := bluetooth.ParseUUID(c.config.ServiceUUID)
@@ -50,7 +64,7 @@ func (c *Client) Scan(ctx context.Context, timeout time.Duration) ([]Device, err
 		return nil, fmt.Errorf("parse service UUID: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := context.WithTimeout(ctx, options.Timeout)
 	defer cancel()
 
 	var (
@@ -66,7 +80,11 @@ func (c *Client) Scan(ctx context.Context, timeout time.Duration) ([]Device, err
 			matchesService := result.HasServiceUUID(serviceUUID)
 			matchesName := c.config.DeviceName != "" && name == c.config.DeviceName
 
-			if !matchesService && !matchesName {
+			if !options.IncludeAll && !matchesService && !matchesName {
+				return
+			}
+
+			if options.IncludeAll && !options.IncludeUnnamed && name == "" {
 				return
 			}
 
