@@ -17,7 +17,7 @@ Status Deck Desktop 是运行在电脑上的轻量上位机程序。
 
 ```text
 desktop/
-├── cmd/status-deck-desktop/   # CLI 入口
+├── cmd/status-deck/           # CLI 入口
 ├── internal/ble/              # BLE 扫描、连接、写入和重连
 ├── internal/collectors/       # 本机/API/服务器状态采集
 ├── internal/config/           # 配置加载
@@ -28,9 +28,9 @@ desktop/
 ## 计划命令
 
 ```bash
-status-deck-desktop run
-status-deck-desktop scan
-status-deck-desktop version
+status-deck run
+status-deck scan
+status-deck version
 ```
 
 ## BLE 协议

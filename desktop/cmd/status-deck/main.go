@@ -25,12 +25,12 @@ func main() {
 	switch os.Args[1] {
 	case "run":
 		if err := run(); err != nil {
-			fmt.Fprintf(os.Stderr, "status-deck-desktop: %v\n", err)
+			fmt.Fprintf(os.Stderr, "status-deck: %v\n", err)
 			os.Exit(1)
 		}
 	case "scan":
 		if err := scan(); err != nil {
-			fmt.Fprintf(os.Stderr, "status-deck-desktop: %v\n", err)
+			fmt.Fprintf(os.Stderr, "status-deck: %v\n", err)
 			os.Exit(1)
 		}
 	case "version":
@@ -44,9 +44,9 @@ func printUsage() {
 	fmt.Println("Status Deck Desktop")
 	fmt.Println()
 	fmt.Println("Usage:")
-	fmt.Println("  status-deck-desktop run      Start the desktop sync loop")
-	fmt.Println("  status-deck-desktop scan     Scan for Status Deck devices")
-	fmt.Println("  status-deck-desktop version  Print version")
+	fmt.Println("  status-deck run      Start the desktop sync loop")
+	fmt.Println("  status-deck scan     Scan for Status Deck devices")
+	fmt.Println("  status-deck version  Print version")
 }
 
 func run() error {
