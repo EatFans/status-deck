@@ -22,8 +22,11 @@ desktop/
 ├── internal/collectors/       # 本机/API/服务器状态采集
 ├── internal/config/           # 配置加载
 ├── internal/protocol/         # 发给硬件的数据结构
+├── internal/systeminfo/       # 独立系统信息采集
 └── go.mod
 ```
+
+`internal/systeminfo/` 当前只负责采集内存、磁盘和电源信息，暂时没有接入状态栏显示或 BLE 发送链路。
 
 ## 启动方式
 
