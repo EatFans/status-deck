@@ -53,6 +53,7 @@ coverage/
 .pio/
 .pioenvs/
 .piolibdeps/
+.platformio/
 platformio-device-monitor-*.log
 
 # ESP-IDF / CMake
