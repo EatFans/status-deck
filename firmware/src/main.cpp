@@ -1,8 +1,16 @@
 #include <Arduino.h>
+
+/**
+ * 初始化
+ */
 void setup() {
-// write your initialization code here
+
+
 }
 
+/**
+ * 循环
+ */
 void loop() {
-// write your code here
+    
 }
