@@ -73,6 +73,11 @@ cmake-build-*/
 *.hex
 *.uf2
 
+# Go
+*.test
+*.out
+coverage.out
+
 # Local temporary files
 tmp/
 temp/
