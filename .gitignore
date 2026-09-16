@@ -75,5 +75,3 @@ cmake-build-*/
 # Local temporary files
 tmp/
 temp/
-
-.pio/
