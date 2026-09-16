@@ -48,6 +48,8 @@ status-deck version
 
 当前 `scan` 已接入 `tinygo.org/x/bluetooth`，会扫描设备名或 Service UUID 匹配 Status Deck 的 BLE 设备。`run` 的连接、订阅和写入还在实现中。
 
+状态栏菜单里的“调试日志”会打开系统终端并实时跟踪应用日志。macOS 当前使用 Terminal + `tail -f`。
+
 ## BLE 协议
 
 固件侧当前使用以下 UUID：

@@ -7,6 +7,7 @@ import (
 
 	"github.com/getlantern/systray"
 
+	"status-deck/desktop/internal/applog"
 	"status-deck/desktop/internal/ble"
 	"status-deck/desktop/internal/config"
 )
@@ -20,6 +21,7 @@ type App struct {
 	lastSyncItem *systray.MenuItem
 	scanItem     *systray.MenuItem
 	autoStart    *systray.MenuItem
+	debugLogs    *systray.MenuItem
 	quitItem     *systray.MenuItem
 }
 
@@ -33,6 +35,11 @@ func NewApp(config config.Config) *App {
 }
 
 func (a *App) Run() error {
+	if err := applog.Init(); err != nil {
+		return err
+	}
+	applog.Println("状态栏应用启动")
+
 	// systray.Run 会阻塞当前 goroutine，直到用户点击“退出”。
 	// onReady 在状态栏运行时回调里创建菜单，onExit 用于释放资源。
 	systray.Run(a.onReady, a.onExit)
@@ -65,8 +72,7 @@ func (a *App) onReady() {
 	// 开机自启当前只是 UI 占位，还没有写入 LaunchAgent/Windows Startup。
 	settings := systray.AddMenuItem("设置", "打开 Status Deck 设置")
 	a.autoStart = settings.AddSubMenuItemCheckbox("开机自启", "电脑启动时自动启动 Status Deck", false)
-	debugLogs := settings.AddSubMenuItemCheckbox("调试日志", "开发时输出更详细的日志", false)
-	debugLogs.Disable()
+	a.debugLogs = settings.AddSubMenuItem("调试日志", "打开系统终端查看实时日志")
 
 	systray.AddSeparator()
 
@@ -76,6 +82,7 @@ func (a *App) onReady() {
 	// 每类交互放一个 goroutine，避免阻塞状态栏主循环。
 	go a.handleScan(deviceStatus)
 	go a.handleAutoStart()
+	go a.handleDebugLogs()
 	go a.handleQuit()
 }
 
@@ -83,10 +90,14 @@ func (a *App) onExit() {
 	// 退出时关闭 BLE 客户端。现在 Close 还没有实质逻辑，
 	// 等连接功能完成后这里会负责断开设备和停止扫描。
 	_ = a.client.Close()
+	applog.Println("状态栏应用退出")
+	_ = applog.Close()
 }
 
 func (a *App) handleScan(deviceStatus *systray.MenuItem) {
 	for range a.scanItem.ClickedCh {
+		applog.Println("开始扫描 Status Deck 设备")
+
 		// 点击“扫描设备”后，临时禁用菜单项，避免重复扫描并发执行。
 		a.statusItem.SetTitle("正在扫描...")
 		a.scanItem.Disable()
@@ -101,6 +112,7 @@ func (a *App) handleScan(deviceStatus *systray.MenuItem) {
 
 		if err != nil {
 			// 扫描失败通常和系统蓝牙权限、蓝牙关闭、底层库错误有关。
+			applog.Printf("扫描失败：%v", err)
 			a.statusItem.SetTitle("扫描失败")
 			deviceStatus.SetTitle(fmt.Sprintf("错误：%v", err))
 			continue
@@ -108,6 +120,7 @@ func (a *App) handleScan(deviceStatus *systray.MenuItem) {
 
 		if len(devices) == 0 {
 			// 没发现设备不一定是错误：可能 ESP32 还没烧录、没上电、没广播。
+			applog.Println("扫描完成：未发现 Status Deck 设备")
 			a.statusItem.SetTitle("未连接")
 			deviceStatus.SetTitle("未发现 Status Deck 设备")
 			continue
@@ -123,6 +136,7 @@ func (a *App) handleScan(deviceStatus *systray.MenuItem) {
 		a.statusItem.SetTitle("已发现：" + name)
 		deviceStatus.SetTitle(fmt.Sprintf("%s RSSI=%d", name, device.RSSI))
 		a.lastSyncItem.SetTitle("上次扫描：" + time.Now().Format("15:04:05"))
+		applog.Printf("扫描完成：发现设备 name=%s id=%s rssi=%d", name, device.ID, device.RSSI)
 	}
 }
 
@@ -132,15 +146,29 @@ func (a *App) handleAutoStart() {
 		// 后续要在这里接 macOS LaunchAgent / Windows Startup。
 		if a.autoStart.Checked() {
 			a.autoStart.Uncheck()
+			applog.Println("开机自启：关闭")
 			continue
 		}
 
 		a.autoStart.Check()
+		applog.Println("开机自启：开启（当前仅 UI 占位）")
+	}
+}
+
+func (a *App) handleDebugLogs() {
+	for range a.debugLogs.ClickedCh {
+		path := applog.Path()
+		applog.Printf("打开调试日志终端：%s", path)
+
+		if err := openLogTerminal(path); err != nil {
+			applog.Printf("打开调试日志终端失败：%v", err)
+		}
 	}
 }
 
 func (a *App) handleQuit() {
 	// 退出入口必须简单可靠：收到点击后让 systray 退出主循环。
 	<-a.quitItem.ClickedCh
+	applog.Println("用户点击退出")
 	systray.Quit()
 }
