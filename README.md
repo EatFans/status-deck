@@ -37,7 +37,7 @@ status-deck/
 
 - 设备端：ESP32、BLE、TFT/OLED/E-Paper 显示屏
 - 电脑端：跨平台桌面客户端，负责采集数据并通过 BLE 下发
-- 通信协议：轻量 JSON 或二进制帧，优先保证易调试和可扩展
+- 通信协议：轻量 JSON 信封，优先保证易调试和可扩展，详见 [BLE 通信协议](./docs/ble-protocol.md)
 - 开发方式：优先支持 PlatformIO，后续可补充 Arduino IDE / ESP-IDF 指南
 
 ## 快速开始
