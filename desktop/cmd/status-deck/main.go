@@ -19,6 +19,8 @@ import (
 const version = "0.1.0-dev"
 
 func main() {
+	// 用户双击应用或直接执行 `status-deck` 时，不进入传统 CLI，
+	// 而是直接启动状态栏/托盘应用。这是桌面端的默认产品形态。
 	if len(os.Args) < 2 {
 		if err := tray(); err != nil {
 			fmt.Fprintf(os.Stderr, "status-deck: %v\n", err)
@@ -27,6 +29,8 @@ func main() {
 		return
 	}
 
+	// 这些子命令主要用于开发、调试和后续自动化。
+	// 普通用户正常情况下只需要启动状态栏应用。
 	switch os.Args[1] {
 	case "run":
 		if err := run(); err != nil {
@@ -65,6 +69,8 @@ func printUsage() {
 }
 
 func run() error {
+	// run 是无界面的同步循环，主要用于调试 BLE 连接和数据发送。
+	// 后续状态栏应用内部也会复用类似的同步逻辑。
 	ctx, stop := signalContext()
 	defer stop()
 
@@ -89,6 +95,8 @@ func run() error {
 			fmt.Println("Shutting down")
 			return nil
 		case <-ticker.C:
+			// 当前还是旧的占位采集器。新的内存/磁盘/电源采集模块在
+			// internal/systeminfo 中，暂时没有接入这里。
 			snapshot, err := collector.Collect(ctx)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "collect status: %v\n", err)
@@ -111,6 +119,10 @@ func run() error {
 }
 
 func scan() error {
+	// scan 用来单独验证电脑端 BLE 扫描能力。
+	// 常用排查命令：
+	//   status-deck scan --all --timeout 10s
+	// 如果能扫到耳机、键盘等设备，说明电脑端蓝牙权限和库基本正常。
 	ctx, stop := signalContext()
 	defer stop()
 
@@ -150,11 +162,13 @@ func scan() error {
 }
 
 func tray() error {
+	// tray 是真正的桌面端入口：创建状态栏图标和菜单。
 	app := trayapp.NewApp(config.Default())
 	return app.Run()
 }
 
 func signalContext() (context.Context, context.CancelFunc) {
+	// 统一处理 Ctrl+C 和系统终止信号，保证调试命令退出时能释放资源。
 	ctx, cancel := signal.NotifyContext(
 		context.Background(),
 		os.Interrupt,
