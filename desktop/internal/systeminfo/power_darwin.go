@@ -9,8 +9,13 @@ import (
 	"strings"
 )
 
+// pmset 输出示例中通常包含 "86%" 这样的电量百分比。
 var pmsetPercentPattern = regexp.MustCompile(`(\d+)%`)
 
+// collectPower 在 macOS 上通过 pmset 读取电池/电源状态。
+//
+// 选择 pmset 的原因是它是系统自带命令，不需要额外权限；
+// 对状态栏应用来说也足够轻量。
 func collectPower(ctx context.Context) Power {
 	output, err := exec.CommandContext(ctx, "pmset", "-g", "batt").Output()
 	if err != nil {
@@ -19,6 +24,9 @@ func collectPower(ctx context.Context) Power {
 
 	text := string(output)
 	percent := parseBatteryPercent(text)
+
+	// pmset 的输出会根据系统版本、是否满电、是否接电源而变化。
+	// 这里用字符串包含关系做宽松解析，优先保证“能展示大概状态”。
 	charging := strings.Contains(text, "; charging;") ||
 		strings.Contains(text, "; charged;") ||
 		strings.Contains(text, "AC Power")
@@ -57,6 +65,7 @@ func collectPower(ctx context.Context) Power {
 	}
 }
 
+// parseBatteryPercent 从 pmset 输出里提取第一个百分比。
 func parseBatteryPercent(text string) *int {
 	matches := pmsetPercentPattern.FindStringSubmatch(text)
 	if len(matches) != 2 {

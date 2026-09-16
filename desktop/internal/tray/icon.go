@@ -7,6 +7,11 @@ import (
 	"image/png"
 )
 
+// statusDeckIconPNG 生成状态栏图标的 PNG 字节。
+//
+// 这里用代码画一个极简小屏幕图标，而不是直接读取磁盘上的图片文件，
+// 是为了让开发阶段运行更简单：go run 时不需要额外处理资源路径。
+// 后续如果有正式 logo，可以改成 go:embed 嵌入 PNG 文件。
 func statusDeckIconPNG() []byte {
 	const size = 18
 
@@ -26,6 +31,7 @@ func statusDeckIconPNG() []byte {
 	return buffer.Bytes()
 }
 
+// fillRect 在图标画布上填充一个普通矩形。
 func fillRect(img *image.RGBA, x, y, w, h int, c color.RGBA) {
 	for py := y; py < y+h; py++ {
 		for px := x; px < x+w; px++ {
@@ -34,6 +40,10 @@ func fillRect(img *image.RGBA, x, y, w, h int, c color.RGBA) {
 	}
 }
 
+// fillRoundedRect 填充一个简易圆角矩形。
+//
+// 这个函数只服务于小图标生成，不追求复杂抗锯齿；
+// 状态栏图标尺寸很小，简单像素绘制已经够用。
 func fillRoundedRect(img *image.RGBA, x, y, w, h, r int, c color.RGBA) {
 	for py := y; py < y+h; py++ {
 		for px := x; px < x+w; px++ {
