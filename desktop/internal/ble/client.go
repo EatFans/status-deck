@@ -2,8 +2,11 @@ package ble
 
 import (
 	"context"
-	"errors"
+	"fmt"
+	"sync"
 	"time"
+
+	"tinygo.org/x/bluetooth"
 )
 
 const (
@@ -11,8 +14,6 @@ const (
 	DefaultRXUUID      = "7f3a0002-6c21-4b7d-9d5d-1f4f2b3a9000"
 	DefaultTXUUID      = "7f3a0003-6c21-4b7d-9d5d-1f4f2b3a9000"
 )
-
-var ErrNotImplemented = errors.New("BLE backend is not implemented yet")
 
 type Config struct {
 	DeviceName  string
@@ -29,22 +30,87 @@ type Device struct {
 
 type Client struct {
 	config Config
+	adapter *bluetooth.Adapter
 }
 
 func NewClient(config Config) *Client {
-	return &Client{config: config}
+	return &Client{
+		config:  config,
+		adapter: bluetooth.DefaultAdapter,
+	}
 }
 
 func (c *Client) Scan(ctx context.Context, timeout time.Duration) ([]Device, error) {
-	return nil, ErrNotImplemented
+	if err := c.adapter.Enable(); err != nil {
+		return nil, fmt.Errorf("enable BLE adapter: %w", err)
+	}
+
+	serviceUUID, err := bluetooth.ParseUUID(c.config.ServiceUUID)
+	if err != nil {
+		return nil, fmt.Errorf("parse service UUID: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	var (
+		mu      sync.Mutex
+		devices []Device
+		seen    = map[string]bool{}
+	)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- c.adapter.Scan(func(adapter *bluetooth.Adapter, result bluetooth.ScanResult) {
+			name := result.LocalName()
+			matchesService := result.HasServiceUUID(serviceUUID)
+			matchesName := c.config.DeviceName != "" && name == c.config.DeviceName
+
+			if !matchesService && !matchesName {
+				return
+			}
+
+			id := result.Address.String()
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			if seen[id] {
+				return
+			}
+
+			seen[id] = true
+			devices = append(devices, Device{
+				ID:   id,
+				Name: name,
+				RSSI: int(result.RSSI),
+			})
+		})
+	}()
+
+	select {
+	case <-ctx.Done():
+		if err := c.adapter.StopScan(); err != nil {
+			return nil, fmt.Errorf("stop BLE scan: %w", err)
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]Device(nil), devices...), nil
+	case err := <-errCh:
+		if err != nil {
+			return nil, fmt.Errorf("scan BLE devices: %w", err)
+		}
+		return nil, nil
+	}
 }
 
 func (c *Client) Connect(ctx context.Context) error {
-	return ErrNotImplemented
+	return fmt.Errorf("BLE connect is not implemented yet")
 }
 
 func (c *Client) Write(ctx context.Context, payload []byte) error {
-	return ErrNotImplemented
+	return fmt.Errorf("BLE write is not implemented yet")
 }
 
 func (c *Client) Close() error {
