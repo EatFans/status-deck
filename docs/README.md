@@ -5,3 +5,4 @@
 ## 文档列表
 
 - [BLE 通信协议](./ble-protocol.md)
+- [桌面客户端设计](./desktop-app.md)

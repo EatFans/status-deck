@@ -13,19 +13,28 @@ import (
 	"status-deck/desktop/internal/collectors"
 	"status-deck/desktop/internal/config"
 	"status-deck/desktop/internal/protocol"
+	trayapp "status-deck/desktop/internal/tray"
 )
 
 const version = "0.1.0-dev"
 
 func main() {
 	if len(os.Args) < 2 {
-		printUsage()
+		if err := tray(); err != nil {
+			fmt.Fprintf(os.Stderr, "status-deck: %v\n", err)
+			os.Exit(1)
+		}
 		return
 	}
 
 	switch os.Args[1] {
 	case "run":
 		if err := run(); err != nil {
+			fmt.Fprintf(os.Stderr, "status-deck: %v\n", err)
+			os.Exit(1)
+		}
+	case "tray":
+		if err := tray(); err != nil {
 			fmt.Fprintf(os.Stderr, "status-deck: %v\n", err)
 			os.Exit(1)
 		}
@@ -45,10 +54,14 @@ func printUsage() {
 	fmt.Println("Status Deck Desktop")
 	fmt.Println()
 	fmt.Println("Usage:")
+	fmt.Println("  status-deck          Start the status bar app")
+	fmt.Println("  status-deck version  Print version")
+	fmt.Println()
+	fmt.Println("Development:")
+	fmt.Println("  status-deck tray     Start the status bar app")
 	fmt.Println("  status-deck run      Start the desktop sync loop")
 	fmt.Println("  status-deck scan     Scan for Status Deck devices")
 	fmt.Println("  status-deck scan --all --timeout 10s")
-	fmt.Println("  status-deck version  Print version")
 }
 
 func run() error {
@@ -112,8 +125,8 @@ func scan() error {
 	cfg := config.Default()
 	client := ble.NewClient(cfg.BLE)
 	devices, err := client.ScanWithOptions(ctx, ble.ScanOptions{
-		Timeout:       *timeout,
-		IncludeAll:    *includeAll,
+		Timeout:        *timeout,
+		IncludeAll:     *includeAll,
 		IncludeUnnamed: *includeUnnamed,
 	})
 	if err != nil {
@@ -134,6 +147,11 @@ func scan() error {
 		fmt.Printf("%s %s RSSI=%d\n", device.ID, device.Name, device.RSSI)
 	}
 	return nil
+}
+
+func tray() error {
+	app := trayapp.NewApp(config.Default())
+	return app.Run()
 }
 
 func signalContext() (context.Context, context.CancelFunc) {

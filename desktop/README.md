@@ -2,7 +2,7 @@
 
 Status Deck Desktop 是运行在电脑上的轻量上位机程序。
 
-第一版先做成 CLI：采集电脑和网络状态数据，通过 BLE 实时发送给 ESP32-S3 状态卡。后续可以在同一个 Go 程序上增加 Windows 托盘 / macOS 菜单栏模式。
+第一版就按状态栏应用来做：启动后挂载到 Windows 托盘或 macOS 菜单栏中，采集电脑和网络状态数据，通过 BLE 实时发送给 ESP32-S3 状态卡。开发调试命令保留在同一个 Go 程序里，详见 [桌面客户端设计](../docs/desktop-app.md)。
 
 ## 目标
 
@@ -11,7 +11,7 @@ Status Deck Desktop 是运行在电脑上的轻量上位机程序。
 - 定时采集本机状态、API 用量和服务器健康状态
 - 将数据打包成统一 JSON 协议发送给 ESP32-S3
 - 支持断线自动重连
-- 后续支持状态栏小 UI
+- 默认以状态栏/托盘应用运行
 
 ## 项目结构
 
@@ -25,9 +25,18 @@ desktop/
 └── go.mod
 ```
 
-## 计划命令
+## 启动方式
 
 ```bash
+status-deck
+```
+
+直接启动 `status-deck` 会进入状态栏/托盘模式。
+
+开发调试命令：
+
+```bash
+status-deck tray
 status-deck run
 status-deck scan
 status-deck scan --all --timeout 10s
