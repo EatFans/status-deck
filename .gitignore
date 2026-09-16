@@ -1,0 +1,77 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+logs/
+
+# Python agent
+__pycache__/
+*.py[cod]
+*$py.class
+.python-version
+.venv/
+venv/
+env/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node.js agent
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.next/
+.nuxt/
+coverage/
+
+# PlatformIO / ESP32 firmware
+.pio/
+.pioenvs/
+.piolibdeps/
+platformio-device-monitor-*.log
+
+# ESP-IDF / CMake
+sdkconfig.old
+managed_components/
+CMakeFiles/
+CMakeCache.txt
+cmake-build-*/
+
+# Arduino
+*.ino.cpp
+
+# Build artifacts
+*.bin
+*.elf
+*.map
+*.hex
+*.uf2
+
+# Local temporary files
+tmp/
+temp/
