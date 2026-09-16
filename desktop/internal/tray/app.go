@@ -72,7 +72,7 @@ func (a *App) onReady() {
 	// 开机自启当前只是 UI 占位，还没有写入 LaunchAgent/Windows Startup。
 	settings := systray.AddMenuItem("设置", "打开 Status Deck 设置")
 	a.autoStart = settings.AddSubMenuItemCheckbox("开机自启", "电脑启动时自动启动 Status Deck", false)
-	a.debugLogs = settings.AddSubMenuItem("调试日志", "打开系统终端查看实时日志")
+	a.debugLogs = settings.AddSubMenuItemCheckbox("调试日志", "打开系统终端查看实时日志", false)
 
 	systray.AddSeparator()
 
@@ -157,11 +157,23 @@ func (a *App) handleAutoStart() {
 
 func (a *App) handleDebugLogs() {
 	for range a.debugLogs.ClickedCh {
+		if a.debugLogs.Checked() {
+			a.debugLogs.Uncheck()
+			applog.Println("关闭调试日志终端")
+
+			if err := closeLogTerminal(); err != nil {
+				applog.Printf("关闭调试日志终端失败：%v", err)
+			}
+			continue
+		}
+
+		a.debugLogs.Check()
 		path := applog.Path()
 		applog.Printf("打开调试日志终端：%s", path)
 
 		if err := openLogTerminal(path); err != nil {
 			applog.Printf("打开调试日志终端失败：%v", err)
+			a.debugLogs.Uncheck()
 		}
 	}
 }
