@@ -72,7 +72,14 @@ public:
    *
    * 这个方法通常只在 setup() 里调用一次。
    */
-  void begin(const Config &config = Config());
+  void begin();
+
+  /**
+   * 使用指定配置初始化 BLE。
+   *
+   * 保留此重载，方便后续不同硬件版本替换设备名或 UUID。
+   */
+  void begin(const Config &config);
 
   /**
    * BLE 维护循环。
@@ -86,6 +93,15 @@ public:
    * 当前是否已有电脑端连接。
    */
   bool isConnected() const;
+
+  /**
+   * 桌面应用是否仍在正常发送数据。
+   *
+   * 这和 isConnected() 不同：BLE 链路有时会因为电脑休眠、应用异常等原因
+   * 暂时没有立刻断开。只要 heartbeat 或其他桌面端消息超过超时时间未到达，
+   * 此方法就会返回 false，屏幕 UI 可以据此显示“等待电脑数据”。
+   */
+  bool isDesktopOnline() const;
 
   /**
    * 是否已经存在 bonded peer。
@@ -146,6 +162,12 @@ private:
 
   // 当前连接状态。
   bool connected_ = false;
+
+  // 最近一次收到桌面端消息的时刻。heartbeat 和正常业务消息都会刷新它。
+  uint32_t lastDesktopMessageMs_ = 0;
+
+  // 桌面端业务心跳状态。它不会替代 BLE 的真实连接状态。
+  bool desktopOnline_ = false;
 
   // 当前是否认为自己正在广播。用于断线后的广播恢复。
   bool advertising_ = false;

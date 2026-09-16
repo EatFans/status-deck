@@ -23,7 +23,8 @@ void handleBleMessage(const String &message) {
   Serial.println(message);
 
   // 给电脑端一个最小 ACK，方便桌面客户端确认 ESP32-S3 已收到数据。
-  statusBle.notify("{\"ok\":true}");
+  // 后续接入 ArduinoJson 后，可从请求中提取 id 并填进 payload.ref。
+  statusBle.notify("{\"v\":1,\"type\":\"ack\",\"source\":\"device\",\"payload\":{\"ok\":true}}");
 }
 
 /**

@@ -4,6 +4,16 @@ namespace {
 // 断开连接后，每隔一段时间检查一次广播状态。
 // 不需要每个 loop 都调用 startAdvertising()，否则会让日志和 BLE 状态变得很吵。
 constexpr uint32_t kAdvertiseCheckIntervalMs = 1000;
+
+// 桌面端每 10 秒发送一次 heartbeat。30 秒没有收到任何桌面端消息时，
+// 认为桌面应用已停止同步；保留一定余量以容忍短暂卡顿或蓝牙调度延迟。
+constexpr uint32_t kDesktopHeartbeatTimeoutMs = 30000;
+}
+
+void StatusBleServer::begin() {
+  // 不把 Config() 写成 begin 的默认参数：当前 Arduino 工具链的 C++ 编译器
+  // 对嵌套结构体成员默认值与默认参数的组合兼容性不足。
+  begin(Config{});
 }
 
 void StatusBleServer::begin(const Config &config) {
@@ -78,6 +88,14 @@ void StatusBleServer::begin(const Config &config) {
 void StatusBleServer::loop() {
   const uint32_t now = millis();
 
+  // BLE 物理链路可能尚未触发断开回调，但桌面应用已经退出或电脑休眠。
+  // 心跳超时后仅标记业务离线，不强制断开 BLE；这样桌面端恢复时可以立刻续传。
+  if (connected_ && desktopOnline_ &&
+      now - lastDesktopMessageMs_ > kDesktopHeartbeatTimeoutMs) {
+    desktopOnline_ = false;
+    Serial.println("Desktop heartbeat timed out");
+  }
+
   // 已连接时不需要广播。
   // 未连接时也不要过于频繁检查，1 秒一次足够。
   if (connected_ || now - lastAdvertiseCheckMs_ < kAdvertiseCheckIntervalMs) {
@@ -93,6 +111,10 @@ void StatusBleServer::loop() {
 }
 
 bool StatusBleServer::isConnected() const { return connected_; }
+
+bool StatusBleServer::isDesktopOnline() const {
+  return connected_ && desktopOnline_;
+}
 
 bool StatusBleServer::hasBondedPeer() const {
   return NimBLEDevice::getNumBonds() > 0;
@@ -149,6 +171,9 @@ void StatusBleServer::onConnect(NimBLEServer *server) {
   // BLE 外设通常同一时间只服务一个中心设备，这对桌面状态卡足够。
   connected_ = true;
   advertising_ = false;
+  // 刚连上时还不能算“桌面应用在线”，要等 hello 或 heartbeat 到达。
+  desktopOnline_ = false;
+  lastDesktopMessageMs_ = 0;
   Serial.println("BLE connected");
 }
 
@@ -157,6 +182,8 @@ void StatusBleServer::onDisconnect(NimBLEServer *server) {
   // 这样电脑端客户端重启后可以再次发现设备。
   connected_ = false;
   advertising_ = false;
+  desktopOnline_ = false;
+  lastDesktopMessageMs_ = 0;
   Serial.println("BLE disconnected");
   startAdvertising();
 }
@@ -172,5 +199,12 @@ void StatusBleServer::onWrite(NimBLECharacteristic *characteristic) {
   std::string value = characteristic->getValue();
   Serial.print("BLE write bytes: ");
   Serial.println(value.length());
+
+  // 第一版不引入 JSON 解析库，先做最轻量的协议识别。桌面端的 hello、heartbeat
+  // 和 status.update 都会让设备确认“电脑应用仍正常工作”。后续 UI 层接入
+  // ArduinoJson 后，可在 messageHandler_ 内做完整字段校验和业务分发。
+  lastDesktopMessageMs_ = millis();
+  desktopOnline_ = true;
+
   messageHandler_(String(value.c_str()));
 }
