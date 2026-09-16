@@ -35,30 +35,31 @@ func (a *App) Run() error {
 }
 
 func (a *App) onReady() {
-	systray.SetTitle("Status Deck")
-	systray.SetTooltip("Status Deck")
+	systray.SetIcon(statusDeckIconPNG())
+	systray.SetTitle("")
+	systray.SetTooltip("Status Deck 状态卡")
 
-	a.statusItem = systray.AddMenuItem("Disconnected", "Current device connection status")
+	a.statusItem = systray.AddMenuItem("未连接", "当前设备连接状态")
 	a.statusItem.Disable()
 
-	a.lastSyncItem = systray.AddMenuItem("Last Sync: Never", "Last successful sync time")
+	a.lastSyncItem = systray.AddMenuItem("上次同步：从未", "最近一次成功同步时间")
 	a.lastSyncItem.Disable()
 
 	systray.AddSeparator()
 
-	deviceManager := systray.AddMenuItem("Device Manager", "Scan and manage Status Deck devices")
-	a.scanItem = deviceManager.AddSubMenuItem("Scan Devices", "Scan nearby Status Deck devices")
-	deviceStatus := deviceManager.AddSubMenuItem("No device selected", "Current selected device")
+	deviceManager := systray.AddMenuItem("设备管理", "扫描和管理 Status Deck 设备")
+	a.scanItem = deviceManager.AddSubMenuItem("扫描设备", "扫描附近的 Status Deck 设备")
+	deviceStatus := deviceManager.AddSubMenuItem("未选择设备", "当前选择的设备")
 	deviceStatus.Disable()
 
-	settings := systray.AddMenuItem("Settings", "Open Status Deck settings")
-	a.autoStart = settings.AddSubMenuItemCheckbox("Launch at Login", "Start Status Deck when the computer starts", false)
-	debugLogs := settings.AddSubMenuItemCheckbox("Debug Logs", "Print verbose logs while developing", false)
+	settings := systray.AddMenuItem("设置", "打开 Status Deck 设置")
+	a.autoStart = settings.AddSubMenuItemCheckbox("开机自启", "电脑启动时自动启动 Status Deck", false)
+	debugLogs := settings.AddSubMenuItemCheckbox("调试日志", "开发时输出更详细的日志", false)
 	debugLogs.Disable()
 
 	systray.AddSeparator()
 
-	a.quitItem = systray.AddMenuItem("Quit", "Quit Status Deck")
+	a.quitItem = systray.AddMenuItem("退出", "退出 Status Deck")
 
 	go a.handleScan(deviceStatus)
 	go a.handleAutoStart()
@@ -71,7 +72,7 @@ func (a *App) onExit() {
 
 func (a *App) handleScan(deviceStatus *systray.MenuItem) {
 	for range a.scanItem.ClickedCh {
-		a.statusItem.SetTitle("Scanning...")
+		a.statusItem.SetTitle("正在扫描...")
 		a.scanItem.Disable()
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -83,14 +84,14 @@ func (a *App) handleScan(deviceStatus *systray.MenuItem) {
 		a.scanItem.Enable()
 
 		if err != nil {
-			a.statusItem.SetTitle("Scan failed")
-			deviceStatus.SetTitle(fmt.Sprintf("Error: %v", err))
+			a.statusItem.SetTitle("扫描失败")
+			deviceStatus.SetTitle(fmt.Sprintf("错误：%v", err))
 			continue
 		}
 
 		if len(devices) == 0 {
-			a.statusItem.SetTitle("Disconnected")
-			deviceStatus.SetTitle("No Status Deck device found")
+			a.statusItem.SetTitle("未连接")
+			deviceStatus.SetTitle("未发现 Status Deck 设备")
 			continue
 		}
 
@@ -100,9 +101,9 @@ func (a *App) handleScan(deviceStatus *systray.MenuItem) {
 			name = device.ID
 		}
 
-		a.statusItem.SetTitle("Found: " + name)
+		a.statusItem.SetTitle("已发现：" + name)
 		deviceStatus.SetTitle(fmt.Sprintf("%s RSSI=%d", name, device.RSSI))
-		a.lastSyncItem.SetTitle("Last Scan: " + time.Now().Format("15:04:05"))
+		a.lastSyncItem.SetTitle("上次扫描：" + time.Now().Format("15:04:05"))
 	}
 }
 

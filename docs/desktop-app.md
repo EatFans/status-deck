@@ -23,19 +23,19 @@ status-deck scan   # BLE 扫描调试
 建议结构：
 
 ```text
-Status Deck
-Disconnected / Connected: Status Deck
-Last Sync: 14:32:10
+状态栏图标
+未连接 / 已连接：Status Deck
+上次同步：14:32:10
 
-Device Manager
-  Scan Devices
-  Current Device
+设备管理
+  扫描设备
+  当前设备
 
-Settings
-  Launch at Login
-  Debug Logs
+设置
+  开机自启
+  调试日志
 
-Quit
+退出
 ```
 
 ## 设备管理
@@ -70,7 +70,7 @@ Quit
 
 ## 退出应用
 
-菜单提供 `Quit`。
+菜单提供 `退出`。
 
 退出时应：
 
