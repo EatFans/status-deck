@@ -20,12 +20,18 @@ Status Deck 是一个基于 ESP32 的开源桌面状态监控卡。它通过 BLE
 status-deck/
 ├── firmware/        # ESP32 固件代码
 ├── desktop/         # 桌面客户端
+├── hardware/        # 硬件选型、接线验证和 PCB 工程
 ├── docs/            # 协议、硬件、接线和开发文档
 ├── tools/           # 辅助脚本
 └── README.md
 ```
 
-> 当前仓库处于初始化阶段，目录会随着固件和桌面客户端实现逐步补齐。
+`hardware/` 目录会拆成两个阶段：
+
+- `hardware/dev-board/`：开发板验证阶段，记录模块选择、购买清单、引脚分配、接线方式和测试结论
+- `hardware/pcb/`：正式 PCB 阶段，放原理图、PCB 版图、BOM、Gerber 和生产相关文件
+
+> 当前仓库处于初始化阶段，目录会随着固件、桌面客户端和硬件验证逐步补齐。
 
 ## 技术方向
 
