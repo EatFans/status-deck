@@ -16,6 +16,10 @@ type App struct {
 	config config.Config
 	client *ble.Client
 
+	// lifecycleCtx 在托盘退出时取消，自动重连与心跳 goroutine 随之停止。
+	lifecycleCtx    context.Context
+	cancelLifecycle context.CancelFunc
+
 	// 下方菜单项需要在扫描/连接状态变化时更新标题，因此保存在 App 里。
 	statusItem   *systray.MenuItem
 	lastSyncItem *systray.MenuItem
@@ -26,11 +30,12 @@ type App struct {
 }
 
 func NewApp(config config.Config) *App {
-	// 状态栏应用内部持有一个 BLE Client。
-	// 现在只用于扫描，后续会扩展为自动连接和持续写入状态数据。
+	ctx, cancel := context.WithCancel(context.Background())
 	return &App{
-		config: config,
-		client: ble.NewClient(config.BLE),
+		config:          config,
+		client:          ble.NewClient(config.BLE),
+		lifecycleCtx:    ctx,
+		cancelLifecycle: cancel,
 	}
 }
 
@@ -78,20 +83,55 @@ func (a *App) onReady() {
 
 	a.quitItem = systray.AddMenuItem("退出", "退出 Status Deck")
 
+	// 应用一启动就开始主动寻找 Status Deck。ESP32 只负责广播，连接和断线重连
+	// 必须由电脑端这个 Central 发起；这里不需要用户手动点“扫描设备”。
+	a.client.Start(a.lifecycleCtx, a.config.ReconnectInterval, a.config.HeartbeatInterval)
+
 	// systray 菜单点击通过 channel 通知。
 	// 每类交互放一个 goroutine，避免阻塞状态栏主循环。
 	go a.handleScan(deviceStatus)
 	go a.handleAutoStart()
 	go a.handleDebugLogs()
 	go a.handleQuit()
+	go a.handleBLEEvents(deviceStatus)
 }
 
 func (a *App) onExit() {
-	// 退出时关闭 BLE 客户端。现在 Close 还没有实质逻辑，
-	// 等连接功能完成后这里会负责断开设备和停止扫描。
+	// 先取消后台维护循环，再主动断开 BLE，避免应用退出后继续扫描或写心跳。
+	a.cancelLifecycle()
 	_ = a.client.Close()
 	applog.Println("状态栏应用退出")
 	_ = applog.Close()
+}
+
+// handleBLEEvents 把 BLE 后台连接状态映射为状态栏文字，同时将设备的 notify
+// 写进应用日志。后续显示屏按键、ACK 和设备错误也都会从这里进入桌面端。
+func (a *App) handleBLEEvents(deviceStatus *systray.MenuItem) {
+	for event := range a.client.Events() {
+		switch event.Type {
+		case ble.EventConnecting:
+			a.statusItem.SetTitle("正在连接...")
+		case ble.EventConnected:
+			name := event.Device.Name
+			if name == "" {
+				name = event.Device.ID
+			}
+			a.statusItem.SetTitle("已连接：" + name)
+			deviceStatus.SetTitle(fmt.Sprintf("%s RSSI=%d", name, event.Device.RSSI))
+			a.lastSyncItem.SetTitle("已建立实时连接")
+			applog.Printf("BLE 已连接：name=%s id=%s", name, event.Device.ID)
+		case ble.EventDisconnected:
+			a.statusItem.SetTitle("连接已断开，正在重连...")
+			applog.Printf("BLE 已断开：id=%s", event.Device.ID)
+		case ble.EventConnectFailed:
+			// 没开机或暂时不在附近是常态，因此 UI 保持安静，日志保留具体原因。
+			a.statusItem.SetTitle("未连接，正在寻找设备...")
+			applog.Printf("BLE 连接尝试失败：%v", event.Err)
+		case ble.EventNotification:
+			a.lastSyncItem.SetTitle("设备响应：" + time.Now().Format("15:04:05"))
+			applog.Printf("BLE TX notify：%s", string(event.Message))
+		}
+	}
 }
 
 func (a *App) handleScan(deviceStatus *systray.MenuItem) {

@@ -18,6 +18,14 @@ type Config struct {
 	// SyncInterval 是向硬件同步状态数据的间隔。
 	// 当前 run 模式会用到，状态栏模式后续也会复用。
 	SyncInterval time.Duration
+
+	// ReconnectInterval 控制设备不可用时的重新扫描频率。
+	// 这不是 BLE 底层连接超时，而是桌面端主动重连策略的间隔。
+	ReconnectInterval time.Duration
+
+	// HeartbeatInterval 控制已连接后发送 heartbeat 的频率。
+	// ESP32-S3 用它判断“BLE 虽然还挂着，但桌面应用是否还正常工作”。
+	HeartbeatInterval time.Duration
 }
 
 // Default 返回开发阶段默认配置。
@@ -31,6 +39,8 @@ func Default() Config {
 			RXUUID:      ble.DefaultRXUUID,
 			TXUUID:      ble.DefaultTXUUID,
 		},
-		SyncInterval: 2 * time.Second,
+		SyncInterval:      2 * time.Second,
+		ReconnectInterval: 5 * time.Second,
+		HeartbeatInterval: 10 * time.Second,
 	}
 }

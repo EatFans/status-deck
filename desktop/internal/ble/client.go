@@ -2,6 +2,7 @@ package ble
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -11,18 +12,12 @@ import (
 
 const (
 	// 这三个 UUID 必须和 ESP32-S3 固件里的 StatusBleServer 配置保持一致。
-	// 桌面端靠 Service UUID 找设备，靠 RX/TX UUID 和设备交换数据。
 	DefaultServiceUUID = "7f3a0001-6c21-4b7d-9d5d-1f4f2b3a9000"
 	DefaultRXUUID      = "7f3a0002-6c21-4b7d-9d5d-1f4f2b3a9000"
 	DefaultTXUUID      = "7f3a0003-6c21-4b7d-9d5d-1f4f2b3a9000"
 )
 
-// Config 是 BLE 客户端配置。
-//
-// DeviceName 用作兼容性兜底：有些系统扫描时不一定能拿到 Service UUID，
-// 这时可以退回按设备名匹配。
-//
-// ServiceUUID/RXUUID/TXUUID 分别对应协议文档里的 GATT 服务和特征值。
+// Config 是 BLE 客户端配置。UUID 分别对应设备的 GATT 服务、RX 和 TX 特征值。
 type Config struct {
 	DeviceName  string
 	ServiceUUID string
@@ -30,54 +25,96 @@ type Config struct {
 	TXUUID      string
 }
 
-// Device 是扫描结果里展示给设备管理菜单或 CLI 的轻量设备信息。
+// Device 是设备管理菜单或开发命令展示的轻量扫描结果。
 type Device struct {
 	ID   string
 	Name string
 	RSSI int
 }
 
-// ScanOptions 控制扫描行为。
-//
-// IncludeAll 用于调试：显示附近所有 BLE 设备，而不是只显示 Status Deck。
-// IncludeUnnamed 用于更深一层排查：很多 BLE 广播没有设备名，默认隐藏掉。
+// ScanOptions 控制一次扫描的范围。
 type ScanOptions struct {
 	Timeout        time.Duration
 	IncludeAll     bool
 	IncludeUnnamed bool
 }
 
-// Client 封装桌面端 BLE Central 能力。
+// EventType 表示连接层发生的事件。UI 只需要订阅 Events，就不必直接碰 BLE 对象。
+type EventType string
+
+const (
+	EventConnecting    EventType = "connecting"
+	EventConnected     EventType = "connected"
+	EventDisconnected  EventType = "disconnected"
+	EventNotification  EventType = "notification"
+	EventConnectFailed EventType = "connect_failed"
+)
+
+// Event 是 BLE 层向上层报告的状态或设备主动通知。
+type Event struct {
+	Type    EventType
+	Device  Device
+	Message []byte
+	Err     error
+}
+
+// Client 把 BLE Central 的扫描、连接、通知订阅和自动重连收在一起。
 //
-// 当前已经实现扫描；连接、订阅 TX notify、写 RX 还在后续补齐。
+// ESP32 是 Peripheral，无法反过来主动连接电脑；因此桌面端启动后必须由本类
+// 持续扫描、主动连接。Start 会启动该维护循环，直到传入的 ctx 被取消或 Close 被调用。
 type Client struct {
 	config  Config
 	adapter *bluetooth.Adapter
+
+	// scanMu 让手动扫描和自动重连扫描串行，避免同一蓝牙适配器并发扫描。
+	scanMu sync.Mutex
+	mu     sync.RWMutex
+
+	addresses map[string]bluetooth.Address
+	device    *bluetooth.Device
+	rx        *bluetooth.DeviceCharacteristic
+	tx        *bluetooth.DeviceCharacteristic
+	current   Device
+
+	events chan Event
+	closed chan struct{}
+	once   sync.Once
 }
 
 func NewClient(config Config) *Client {
-	return &Client{
-		config:  config,
-		adapter: bluetooth.DefaultAdapter,
+	c := &Client{
+		config:    config,
+		adapter:   bluetooth.DefaultAdapter,
+		addresses: make(map[string]bluetooth.Address),
+		events:    make(chan Event, 32),
+		closed:    make(chan struct{}),
 	}
+
+	// tinygo bluetooth 在支持的平台会在底层连接状态变化时回调。心跳循环也会
+	// 再检查一次 Connected，作为跨平台的兜底检测。
+	c.adapter.SetConnectHandler(c.handleConnectionChange)
+	return c
 }
 
+// Events 返回只读事件流。消费者必须尽快处理事件，避免 UI 卡住 BLE 回调。
+func (c *Client) Events() <-chan Event { return c.events }
+
 func (c *Client) Scan(ctx context.Context, timeout time.Duration) ([]Device, error) {
-	// 保留一个简单入口，常规扫描只需要传 timeout。
 	return c.ScanWithOptions(ctx, ScanOptions{Timeout: timeout})
 }
 
+// ScanWithOptions 扫描附近设备，并记住本次扫描得到的 BLE 地址供 Connect 使用。
 func (c *Client) ScanWithOptions(ctx context.Context, options ScanOptions) ([]Device, error) {
-	// 启用本机蓝牙适配器。macOS 第一次运行时可能会弹权限确认。
+	c.scanMu.Lock()
+	defer c.scanMu.Unlock()
+
 	if err := c.adapter.Enable(); err != nil {
 		return nil, fmt.Errorf("enable BLE adapter: %w", err)
 	}
-
 	if options.Timeout <= 0 {
 		options.Timeout = 5 * time.Second
 	}
 
-	// 把字符串 UUID 转成 tinygo bluetooth 使用的 UUID 类型。
 	serviceUUID, err := bluetooth.ParseUUID(c.config.ServiceUUID)
 	if err != nil {
 		return nil, fmt.Errorf("parse service UUID: %w", err)
@@ -91,57 +128,44 @@ func (c *Client) ScanWithOptions(ctx context.Context, options ScanOptions) ([]De
 		devices []Device
 		seen    = map[string]bool{}
 	)
-
 	errCh := make(chan error, 1)
 	go func() {
-		// tinygo bluetooth 的 Scan 是阻塞式调用，所以放到 goroutine 里运行。
-		// 超时后外层会调用 StopScan 停止扫描。
-		errCh <- c.adapter.Scan(func(adapter *bluetooth.Adapter, result bluetooth.ScanResult) {
+		errCh <- c.adapter.Scan(func(_ *bluetooth.Adapter, result bluetooth.ScanResult) {
 			name := result.LocalName()
 			matchesService := result.HasServiceUUID(serviceUUID)
 			matchesName := c.config.DeviceName != "" && name == c.config.DeviceName
-
-			// 默认只保留 Status Deck 设备；--all 调试模式下才显示其他设备。
 			if !options.IncludeAll && !matchesService && !matchesName {
 				return
 			}
-
-			// 附近会有很多匿名 BLE 广播，默认隐藏，避免设备管理列表被刷屏。
 			if options.IncludeAll && !options.IncludeUnnamed && name == "" {
 				return
 			}
 
 			id := result.Address.String()
-
 			mu.Lock()
 			defer mu.Unlock()
-
-			// 同一个设备可能在扫描期间多次广播，这里只保留第一次结果。
 			if seen[id] {
 				return
 			}
-
 			seen[id] = true
-			devices = append(devices, Device{
-				ID:   id,
-				Name: name,
-				RSSI: int(result.RSSI),
-			})
+			device := Device{ID: id, Name: name, RSSI: int(result.RSSI)}
+			devices = append(devices, device)
+
+			c.mu.Lock()
+			c.addresses[id] = result.Address
+			c.mu.Unlock()
 		})
 	}()
 
 	select {
 	case <-ctx.Done():
-		// 扫描超时或用户取消时，主动停止 BLE 扫描并返回已发现的设备。
 		if err := c.adapter.StopScan(); err != nil {
 			return nil, fmt.Errorf("stop BLE scan: %w", err)
 		}
-
 		mu.Lock()
 		defer mu.Unlock()
 		return append([]Device(nil), devices...), nil
 	case err := <-errCh:
-		// 如果底层扫描提前退出，说明蓝牙栈或权限可能出了问题。
 		if err != nil {
 			return nil, fmt.Errorf("scan BLE devices: %w", err)
 		}
@@ -149,22 +173,256 @@ func (c *Client) ScanWithOptions(ctx context.Context, options ScanOptions) ([]De
 	}
 }
 
+// Connect 扫描并连接第一台 Status Deck。已经连接时直接返回，不会重复建链。
 func (c *Client) Connect(ctx context.Context) error {
-	// TODO: 实现：
-	// 1. 扫描 Status Deck Service UUID
-	// 2. 连接设备
-	// 3. 发现 RX/TX 特征值
-	// 4. 订阅 TX notify
-	// 5. 保存设备 ID 供下次自动重连
-	return fmt.Errorf("BLE connect is not implemented yet")
-}
+	if c.IsConnected() {
+		return nil
+	}
+	c.emit(Event{Type: EventConnecting})
 
-func (c *Client) Write(ctx context.Context, payload []byte) error {
-	// TODO: 连接完成后，把 JSON 协议消息写入固件侧 RX 特征值。
-	return fmt.Errorf("BLE write is not implemented yet")
-}
+	devices, err := c.Scan(ctx, 5*time.Second)
+	if err != nil {
+		return err
+	}
+	if len(devices) == 0 {
+		return fmt.Errorf("no Status Deck devices found")
+	}
 
-func (c *Client) Close() error {
-	// TODO: 连接实现后，这里负责取消扫描、断开连接、释放平台资源。
+	target := devices[0]
+	c.mu.RLock()
+	address, ok := c.addresses[target.ID]
+	c.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("BLE address for %s was not retained", target.ID)
+	}
+
+	device, err := c.adapter.Connect(address, bluetooth.ConnectionParams{})
+	if err != nil {
+		return fmt.Errorf("connect to %s: %w", target.ID, err)
+	}
+
+	if err := c.discover(device, target); err != nil {
+		_ = device.Disconnect()
+		return err
+	}
+
+	// 协议规定：订阅通知后，桌面端先主动发送 hello，设备据此确认会话已经就绪。
+	if err := c.Write(ctx, newEnvelope("hello", map[string]any{
+		"client": "status-deck", "protocol": 1,
+		"features": []string{"json", "ack", "status", "heartbeat"},
+	})); err != nil {
+		_ = device.Disconnect()
+		c.clearConnection(target, false)
+		return fmt.Errorf("send hello: %w", err)
+	}
+
+	c.emit(Event{Type: EventConnected, Device: target})
 	return nil
+}
+
+// Start 启动自动连接与保活循环。它可安全重复调用，只有第一次会生效。
+// 连接失败不会退出：ESP32 未上电、超出范围或暂时断开都是正常场景，下一轮会重试。
+func (c *Client) Start(ctx context.Context, reconnectInterval, heartbeatInterval time.Duration) {
+	if reconnectInterval <= 0 {
+		reconnectInterval = 5 * time.Second
+	}
+	if heartbeatInterval <= 0 {
+		heartbeatInterval = 10 * time.Second
+	}
+	c.once.Do(func() {
+		go c.maintain(ctx, reconnectInterval, heartbeatInterval)
+	})
+}
+
+func (c *Client) maintain(ctx context.Context, reconnectInterval, heartbeatInterval time.Duration) {
+	retry := time.NewTimer(0)
+	defer retry.Stop()
+	heartbeat := time.NewTicker(heartbeatInterval)
+	defer heartbeat.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			_ = c.Close()
+			return
+		case <-c.closed:
+			return
+		case <-retry.C:
+			if !c.IsConnected() {
+				attemptCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+				err := c.Connect(attemptCtx)
+				cancel()
+				if err != nil {
+					c.emit(Event{Type: EventConnectFailed, Err: err})
+				}
+			}
+			retry.Reset(reconnectInterval)
+		case <-heartbeat.C:
+			if !c.IsConnected() {
+				continue
+			}
+			if err := c.Write(ctx, newEnvelope("heartbeat", map[string]any{"interval": heartbeatInterval.Milliseconds()})); err != nil {
+				c.markDisconnected(err)
+			}
+		}
+	}
+}
+
+func (c *Client) discover(device bluetooth.Device, target Device) error {
+	serviceUUID, err := bluetooth.ParseUUID(c.config.ServiceUUID)
+	if err != nil {
+		return fmt.Errorf("parse service UUID: %w", err)
+	}
+	rxUUID, err := bluetooth.ParseUUID(c.config.RXUUID)
+	if err != nil {
+		return fmt.Errorf("parse RX UUID: %w", err)
+	}
+	txUUID, err := bluetooth.ParseUUID(c.config.TXUUID)
+	if err != nil {
+		return fmt.Errorf("parse TX UUID: %w", err)
+	}
+
+	services, err := device.DiscoverServices([]bluetooth.UUID{serviceUUID})
+	if err != nil || len(services) != 1 {
+		return fmt.Errorf("discover Status Deck service: %w", err)
+	}
+	characteristics, err := services[0].DiscoverCharacteristics([]bluetooth.UUID{rxUUID, txUUID})
+	if err != nil || len(characteristics) != 2 {
+		return fmt.Errorf("discover Status Deck characteristics: %w", err)
+	}
+
+	c.mu.Lock()
+	c.device = &device
+	c.rx = &characteristics[0]
+	c.tx = &characteristics[1]
+	c.current = target
+	c.mu.Unlock()
+
+	// EnableNotifications 会写入 CCCD；此后设备端调用 notify 时，桌面端会立刻收到。
+	if err := characteristics[1].EnableNotifications(func(message []byte) {
+		copyMessage := append([]byte(nil), message...)
+		c.emit(Event{Type: EventNotification, Device: target, Message: copyMessage})
+	}); err != nil {
+		c.clearConnection(target, false)
+		return fmt.Errorf("subscribe TX notifications: %w", err)
+	}
+	return nil
+}
+
+// Write 通过 RX 特征值写入一条完整 JSON 消息。实时状态更新使用 Write Without
+// Response，避免每一条都等待 ATT 写响应；关键消息后续可在协议层增加 ACK 重传。
+func (c *Client) Write(_ context.Context, payload []byte) error {
+	c.mu.RLock()
+	rx := c.rx
+	c.mu.RUnlock()
+	if rx == nil || !c.IsConnected() {
+		return fmt.Errorf("Status Deck is not connected")
+	}
+	if _, err := rx.WriteWithoutResponse(payload); err != nil {
+		return fmt.Errorf("write RX characteristic: %w", err)
+	}
+	return nil
+}
+
+// IsConnected 同时检查本地连接资源和底层链路状态。
+func (c *Client) IsConnected() bool {
+	c.mu.RLock()
+	device := c.device
+	c.mu.RUnlock()
+	if device == nil {
+		return false
+	}
+	connected, err := device.Connected()
+	return err == nil && connected
+}
+
+func (c *Client) handleConnectionChange(device bluetooth.Device, connected bool) {
+	if connected {
+		return
+	}
+	c.mu.RLock()
+	current := c.current
+	known := c.device != nil && c.device.Address.String() == device.Address.String()
+	c.mu.RUnlock()
+	if known {
+		c.clearConnection(current, true)
+	}
+}
+
+func (c *Client) markDisconnected(err error) {
+	c.mu.RLock()
+	current := c.current
+	c.mu.RUnlock()
+	c.clearConnection(current, true)
+	c.emit(Event{Type: EventConnectFailed, Device: current, Err: err})
+}
+
+func (c *Client) clearConnection(device Device, notify bool) {
+	c.mu.Lock()
+	c.device = nil
+	c.rx = nil
+	c.tx = nil
+	c.current = Device{}
+	c.mu.Unlock()
+	if notify {
+		c.emit(Event{Type: EventDisconnected, Device: device})
+	}
+}
+
+func (c *Client) emit(event Event) {
+	select {
+	case c.events <- event:
+	default:
+		// UI 短暂卡顿不能反过来阻塞 CoreBluetooth 回调；丢弃的是非关键展示事件。
+	}
+}
+
+// Close 断开当前设备，并让后台自动连接循环停止。
+func (c *Client) Close() error {
+	select {
+	case <-c.closed:
+		return nil
+	default:
+		close(c.closed)
+	}
+
+	c.mu.Lock()
+	device := c.device
+	current := c.current
+	c.device = nil
+	c.rx = nil
+	c.tx = nil
+	c.current = Device{}
+	c.mu.Unlock()
+	if device == nil {
+		return nil
+	}
+	err := device.Disconnect()
+	c.emit(Event{Type: EventDisconnected, Device: current})
+	return err
+}
+
+func newEnvelope(messageType string, payload any) []byte {
+	message := struct {
+		Version int    `json:"v"`
+		ID      string `json:"id"`
+		Type    string `json:"type"`
+		TS      int64  `json:"ts"`
+		Source  string `json:"source"`
+		Target  string `json:"target"`
+		Payload any    `json:"payload"`
+	}{
+		Version: 1,
+		ID:      fmt.Sprintf("desktop_%d", time.Now().UnixNano()),
+		Type:    messageType,
+		TS:      time.Now().UnixMilli(),
+		Source:  "desktop",
+		Target:  "device",
+		Payload: payload,
+	}
+	encoded, err := json.Marshal(message)
+	if err != nil {
+		return []byte(`{}`)
+	}
+	return encoded
 }
