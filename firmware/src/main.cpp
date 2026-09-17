@@ -2,6 +2,7 @@
 #include <ArduinoJson.h>
 #include <cstring>
 
+#include "CodexUsageStore.h"
 #include "DeviceStatusStore.h"
 #include "StatusBleServer.h"
 
@@ -13,12 +14,16 @@ StatusBleServer statusBle;
 // 不需要知道 BLE 消息格式或重复解析 JSON。
 DeviceStatusStore deviceStatus;
 
+// Codex 用量有自己的存储器。未来 Codex 页面从 codexUsage.current() 读取，
+// 因此不会和 CPU、内存等系统信息产生耦合。
+CodexUsageStore codexUsage;
+
 /**
  * 电脑端写入 BLE RX 特征值时会触发这个回调。
  *
  * 当前支持 hello、heartbeat 和 status.update：
  * - hello / heartbeat：确认通信链路仍正常
- * - status.update：解析系统信息并写入 deviceStatus
+ * - status.update：解析系统信息与 Codex 用量，分别写入各自的状态存储器
  */
 void handleBleMessage(const String &message) {
   Serial.print("BLE RX: ");
@@ -45,6 +50,13 @@ void handleBleMessage(const String &message) {
       return;
     }
 
+    if (!codexUsage.updateFromStatusPayload(document["payload"], statusError)) {
+      Serial.print("Codex usage rejected: ");
+      Serial.println(statusError);
+      statusBle.notify("{\"v\":1,\"type\":\"error\",\"source\":\"device\",\"payload\":{\"code\":\"invalid_codex\"}}");
+      return;
+    }
+
     // 仅打印摘要，避免每 2 秒刷出完整 JSON。屏幕 UI 可通过 current() 读取详情。
     const SystemStatus &system = deviceStatus.current();
     Serial.print("System status stored: cpu=");
@@ -61,6 +73,20 @@ void handleBleMessage(const String &message) {
     Serial.print("% disk=");
     Serial.print(system.disk.usedPercent, 1);
     Serial.println("%");
+
+    const CodexUsageStatus &codex = codexUsage.current();
+    if (!codex.available) {
+      Serial.println("Codex usage unavailable");
+    } else {
+      Serial.print("Codex usage stored: 5h=");
+      Serial.print(codex.fiveHour.remainingPercent, 1);
+      Serial.print("% reset=");
+      Serial.print(codex.fiveHour.resetLabel);
+      Serial.print(" weekly=");
+      Serial.print(codex.weekly.remainingPercent, 1);
+      Serial.print("% reset=");
+      Serial.println(codex.weekly.resetLabel);
+    }
   }
 
   // 给电脑端 ACK。后续可以从 document["id"] 提取请求 ID，填入 payload.ref。

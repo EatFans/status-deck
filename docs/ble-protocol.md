@@ -201,8 +201,42 @@ Status Deck
 ```
 
 `power.percent`、`charging` 与 `onBattery` 在没有电池的台式机上可以省略；
-`available` 仍会保留并为 `false`。今后增加 AI 用量、API 额度、服务器状态时，
-在 `payload` 下新增同级字段即可，不改变 `system` 的含义。
+`available` 仍会保留并为 `false`。
+
+#### Codex 用量载荷
+
+Codex 用量与 `system` 同属一条 `status.update`，但使用独立的 `payload.codex`
+字段。这使设备端可以分别存储和渲染两个数据域，同时一次 BLE 写入就能让整张
+状态卡刷新到同一份快照。
+
+```json
+{
+  "codex": {
+    "available": true,
+    "fiveHour": {
+      "remainingPercent": 78,
+      "resetLabel": "14:10"
+    },
+    "weekly": {
+      "remainingPercent": 40,
+      "resetLabel": "9月19日"
+    }
+  }
+}
+```
+
+- `available`: 当前是否取得可信的用量数据。为 `false` 时省略两个窗口，设备端
+  应显示数据暂不可用，不应显示为 `0%`。
+- `fiveHour`: 截图中的“5小时”额度窗口。
+- `weekly`: 截图中的“1周”额度窗口。
+- `remainingPercent`: 剩余比例，范围为 `0-100`。
+- `resetLabel`: 面向屏幕直接显示的本地化重置时间，例如 `14:10`、`9月19日`。
+
+上例的数值仅用于说明字段格式。当前 Go 桌面端已预留 Provider 接口并发送
+`available: false`；接入可靠的 Codex 数据源后再填充真实数值。
+
+今后增加 API 额度、服务器状态时，在 `payload` 下新增同级字段即可，不改变
+`system` 和 `codex` 的含义。
 
 通用状态值：
 
