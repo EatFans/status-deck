@@ -9,6 +9,7 @@ import (
 	"github.com/getlantern/systray"
 
 	"status-deck/desktop/internal/applog"
+	"status-deck/desktop/internal/autostart"
 	"status-deck/desktop/internal/ble"
 	"status-deck/desktop/internal/codexusage"
 	"status-deck/desktop/internal/config"
@@ -81,10 +82,14 @@ func (a *App) onReady() {
 	deviceStatus.Disable()
 
 	// 设置菜单先放轻量选项。
-	// 开机自启当前只是 UI 占位，还没有写入 LaunchAgent/Windows Startup。
 	settings := systray.AddMenuItem("设置", "打开 Status Deck 设置")
 	a.autoStart = settings.AddSubMenuItemCheckbox("开机自启", "电脑启动时自动启动 Status Deck", false)
 	a.debugLogs = settings.AddSubMenuItemCheckbox("调试日志", "打开系统终端查看实时日志", false)
+	if enabled, err := autostart.Enabled(); err != nil {
+		applog.Printf("读取开机自启状态失败：%v", err)
+	} else if enabled {
+		a.autoStart.Check()
+	}
 
 	systray.AddSeparator()
 
@@ -211,16 +216,22 @@ func (a *App) handleScan(deviceStatus *systray.MenuItem) {
 
 func (a *App) handleAutoStart() {
 	for range a.autoStart.ClickedCh {
-		// 当前只是菜单 UI 行为：点击后切换勾选状态。
-		// 后续要在这里接 macOS LaunchAgent / Windows Startup。
 		if a.autoStart.Checked() {
+			if err := autostart.Disable(); err != nil {
+				applog.Printf("关闭开机自启失败：%v", err)
+				continue
+			}
 			a.autoStart.Uncheck()
-			applog.Println("开机自启：关闭")
+			applog.Println("开机自启已关闭")
 			continue
 		}
 
+		if err := autostart.Enable(); err != nil {
+			applog.Printf("开启开机自启失败：%v", err)
+			continue
+		}
 		a.autoStart.Check()
-		applog.Println("开机自启：开启（当前仅 UI 占位）")
+		applog.Println("开机自启已开启，将在下次登录时启动")
 	}
 }
 

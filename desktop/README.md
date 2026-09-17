@@ -50,6 +50,55 @@ status-deck version
 
 状态栏菜单里的“调试日志”会打开系统终端并实时跟踪应用日志。macOS 当前使用 Terminal + `tail -f`。
 
+## macOS 打包与开机自启
+
+在 macOS 上执行以下命令，会生成状态栏应用和可分发 zip：
+
+```bash
+./scripts/package-macos.sh
+```
+
+输出文件位于：
+
+```text
+desktop/dist/Status Deck.app
+desktop/dist/Status-Deck-macos.zip
+```
+
+该脚本使用 ad-hoc 签名，适合本机测试。向其他用户分发时，需要使用 Apple Developer ID 签名并完成 notarization，才能避免 Gatekeeper 的来源警告。
+
+状态栏菜单的“设置 > 开机自启”会管理当前用户的 LaunchAgent：
+
+```text
+~/Library/LaunchAgents/com.statusdeck.desktop.plist
+```
+
+启用后，Status Deck 会在下次登录 macOS 时启动。请先将 `Status Deck.app` 放在稳定位置，例如 `/Applications`；若移动或删除应用，需要关闭后重新开启一次开机自启，以更新记录的可执行文件路径。
+
+## Windows 打包与开机自启
+
+请在 Windows 本机的 PowerShell 中执行以下命令，生成无控制台窗口的桌面端可执行文件和 zip：
+
+```powershell
+.\scripts\package-windows.ps1
+```
+
+输出文件位于：
+
+```text
+desktop\dist\Status Deck.exe
+desktop\dist\Status-Deck-windows.zip
+```
+
+“设置 > 开机自启”会在当前用户的注册表中创建或删除以下值，不需要管理员权限：
+
+```text
+HKCU\Software\Microsoft\Windows\CurrentVersion\Run
+值名称：Status Deck
+```
+
+请在启用前将 `Status Deck.exe` 放在稳定位置，例如 `%LOCALAPPDATA%\Status Deck`。若移动或删除可执行文件，需要关闭后重新开启一次开机自启，以更新启动路径。Windows 可能在登录后延后启动后台程序，这是系统的正常行为。
+
 ## BLE 协议
 
 固件侧当前使用以下 UUID：
