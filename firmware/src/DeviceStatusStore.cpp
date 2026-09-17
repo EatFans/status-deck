@@ -12,7 +12,9 @@ bool DeviceStatusStore::updateFromStatusPayload(JsonVariantConst payload,
 
   // 先解析到临时副本。任何字段出错时直接返回，保留屏幕正在展示的旧状态。
   SystemStatus next = status_;
-  if (!parseMemory(system["memory"].as<JsonObjectConst>(), next.memory, error) ||
+  if (!parseCPU(system["cpu"].as<JsonObjectConst>(), next.cpu, error) ||
+      !parseGPU(system["gpu"].as<JsonObjectConst>(), next.gpu, error) ||
+      !parseMemory(system["memory"].as<JsonObjectConst>(), next.memory, error) ||
       !parseDisk(system["disk"].as<JsonObjectConst>(), next.disk, error) ||
       !parsePower(system["power"].as<JsonObjectConst>(), next.power, error)) {
     return false;
@@ -26,16 +28,50 @@ bool DeviceStatusStore::updateFromStatusPayload(JsonVariantConst payload,
 
 const SystemStatus &DeviceStatusStore::current() const { return status_; }
 
+bool DeviceStatusStore::parseCPU(JsonObjectConst object, CPUStatus &target,
+                                 String &error) {
+  if (object.isNull()) {
+    error = "missing system.cpu";
+    return false;
+  }
+  return requireFloat(object, "usagePercent", target.usedPercent, error);
+}
+
+bool DeviceStatusStore::parseGPU(JsonObjectConst object, GPUStatus &target,
+                                 String &error) {
+  if (object.isNull() || !object["available"].is<bool>()) {
+    error = "missing or invalid system.gpu.available";
+    return false;
+  }
+
+  target.available = object["available"].as<bool>();
+  if (!target.available) {
+    target.usedPercent = 0.0f;
+    return true;
+  }
+  return requireFloat(object, "usagePercent", target.usedPercent, error);
+}
+
 bool DeviceStatusStore::parseMemory(JsonObjectConst object,
                                     MemoryStatus &target, String &error) {
   if (object.isNull()) {
     error = "missing system.memory";
     return false;
   }
-  return requireUint64(object, "totalBytes", target.totalBytes, error) &&
-         requireUint64(object, "usedBytes", target.usedBytes, error) &&
-         requireUint64(object, "availableBytes", target.availableBytes, error) &&
-         requireFloat(object, "usedPercent", target.usedPercent, error);
+  uint64_t totalMB = 0;
+  uint64_t usedMB = 0;
+  if (!requireUint64(object, "totalMB", totalMB, error) ||
+      !requireUint64(object, "usedMB", usedMB, error)) {
+    return false;
+  }
+
+  constexpr uint64_t kBytesPerMB = 1024ULL * 1024ULL;
+  target.totalBytes = totalMB * kBytesPerMB;
+  target.usedBytes = usedMB * kBytesPerMB;
+  target.availableBytes = target.totalBytes > target.usedBytes
+                              ? target.totalBytes - target.usedBytes
+                              : 0;
+  return requireFloat(object, "usedPercent", target.usedPercent, error);
 }
 
 bool DeviceStatusStore::parseDisk(JsonObjectConst object, DiskStatus &target,
@@ -45,17 +81,22 @@ bool DeviceStatusStore::parseDisk(JsonObjectConst object, DiskStatus &target,
     return false;
   }
 
-  const char *path = object["path"].as<const char *>();
-  if (path == nullptr) {
-    error = "missing or invalid system.disk.path";
+  // 第一版只同步系统盘，路径固定为根目录。后续多盘支持可扩展为数组。
+  copyText(target.path, sizeof(target.path), "/");
+  uint64_t totalMB = 0;
+  uint64_t usedMB = 0;
+  if (!requireUint64(object, "totalMB", totalMB, error) ||
+      !requireUint64(object, "usedMB", usedMB, error)) {
     return false;
   }
 
-  copyText(target.path, sizeof(target.path), path);
-  return requireUint64(object, "totalBytes", target.totalBytes, error) &&
-         requireUint64(object, "usedBytes", target.usedBytes, error) &&
-         requireUint64(object, "freeBytes", target.freeBytes, error) &&
-         requireFloat(object, "usedPercent", target.usedPercent, error);
+  constexpr uint64_t kBytesPerMB = 1024ULL * 1024ULL;
+  target.totalBytes = totalMB * kBytesPerMB;
+  target.usedBytes = usedMB * kBytesPerMB;
+  target.freeBytes = target.totalBytes > target.usedBytes
+                         ? target.totalBytes - target.usedBytes
+                         : 0;
+  return requireFloat(object, "usedPercent", target.usedPercent, error);
 }
 
 bool DeviceStatusStore::parsePower(JsonObjectConst object, PowerStatus &target,

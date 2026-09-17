@@ -47,7 +47,16 @@ void handleBleMessage(const String &message) {
 
     // 仅打印摘要，避免每 2 秒刷出完整 JSON。屏幕 UI 可通过 current() 读取详情。
     const SystemStatus &system = deviceStatus.current();
-    Serial.print("System status stored: memory=");
+    Serial.print("System status stored: cpu=");
+    Serial.print(system.cpu.usedPercent, 1);
+    Serial.print("% gpu=");
+    if (system.gpu.available) {
+      Serial.print(system.gpu.usedPercent, 1);
+      Serial.print("%");
+    } else {
+      Serial.print("unavailable");
+    }
+    Serial.print(" memory=");
     Serial.print(system.memory.usedPercent, 1);
     Serial.print("% disk=");
     Serial.print(system.disk.usedPercent, 1);

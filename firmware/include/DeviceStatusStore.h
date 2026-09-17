@@ -22,6 +22,15 @@ struct MemoryStatus {
   float usedPercent = 0.0f;
 };
 
+struct CPUStatus {
+  float usedPercent = 0.0f;
+};
+
+struct GPUStatus {
+  bool available = false;
+  float usedPercent = 0.0f;
+};
+
 struct DiskStatus {
   char path[32] = {};
   uint64_t totalBytes = 0;
@@ -45,6 +54,8 @@ struct PowerStatus {
 struct SystemStatus {
   bool valid = false;
   uint32_t updatedAtMs = 0;
+  CPUStatus cpu;
+  GPUStatus gpu;
   MemoryStatus memory;
   DiskStatus disk;
   PowerStatus power;
@@ -72,6 +83,8 @@ public:
 
 private:
   bool parseMemory(JsonObjectConst object, MemoryStatus &target, String &error);
+  bool parseCPU(JsonObjectConst object, CPUStatus &target, String &error);
+  bool parseGPU(JsonObjectConst object, GPUStatus &target, String &error);
   bool parseDisk(JsonObjectConst object, DiskStatus &target, String &error);
   bool parsePower(JsonObjectConst object, PowerStatus &target, String &error);
   bool requireUint64(JsonObjectConst object, const char *key, uint64_t &target,
