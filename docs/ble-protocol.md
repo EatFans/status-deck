@@ -105,9 +105,11 @@ Status Deck
 
 设备端可通过 TX notify 回 `hello.ack`。
 
-### `status.update`
+### `status.update`（旧版兼容）
 
-桌面客户端推送状态数据。这个消息是协议核心。
+这是早期将全部数据合在一个 payload 的消息格式，仅为兼容旧固件保留。当前桌面端
+不再发送它，而是按数据域使用 `system.update`、`codex.update` 等独立消息，具体
+payload 请以“当前系统信息载荷”和“Codex 用量载荷”两节为准。
 
 ```json
 {
@@ -164,15 +166,14 @@ Status Deck
 }
 ```
 
-#### 当前系统信息载荷
+#### 当前系统信息载荷：`system.update`
 
-桌面端第一版实际发送的 `payload.system` 使用下列字段。百分比为 `0-100` 的
+桌面端第一版实际发送的 `system.update.payload` 使用下列字段。百分比为 `0-100` 的
 小数；内存和磁盘容量以 MB 传输以控制 BLE 包体积，设备端会换算为 bytes 后存入
 内存变量，供当前或未来页面渲染。
 
 ```json
 {
-  "system": {
     "cpu": {
       "usagePercent": 18.5
     },
@@ -196,22 +197,19 @@ Status Deck
       "charging": true,
       "onBattery": false
     }
-  }
 }
 ```
 
 `power.percent`、`charging` 与 `onBattery` 在没有电池的台式机上可以省略；
 `available` 仍会保留并为 `false`。
 
-#### Codex 用量载荷
+#### Codex 用量载荷：`codex.update`
 
-Codex 用量与 `system` 同属一条 `status.update`，但使用独立的 `payload.codex`
-字段。这使设备端可以分别存储和渲染两个数据域，同时一次 BLE 写入就能让整张
-状态卡刷新到同一份快照。
+Codex 用量使用独立的 `codex.update.payload`。系统、Codex、API 和服务器等数据域
+各自占用一次 BLE 写入，避免多个模块合并后触及单包 GATT 长度上限。
 
 ```json
 {
-  "codex": {
     "available": true,
     "fiveHour": {
       "remainingPercent": 78,
@@ -221,7 +219,6 @@ Codex 用量与 `system` 同属一条 `status.update`，但使用独立的 `payl
       "remainingPercent": 40,
       "resetLabel": "9月19日"
     }
-  }
 }
 ```
 
@@ -232,11 +229,18 @@ Codex 用量与 `system` 同属一条 `status.update`，但使用独立的 `payl
 - `remainingPercent`: 剩余比例，范围为 `0-100`。
 - `resetLabel`: 面向屏幕直接显示的本地化重置时间，例如 `14:10`、`9月19日`。
 
-上例的数值仅用于说明字段格式。当前 Go 桌面端已预留 Provider 接口并发送
-`available: false`；接入可靠的 Codex 数据源后再填充真实数值。
+上例的数值仅用于说明字段格式。Go 桌面端只读取本机
+`~/.codex/sessions/**/*.jsonl`（或 `$CODEX_HOME/sessions/**/*.jsonl`）中最新的
+`event_msg.token_count.rate_limits` 事件，不读取 `auth.json`，不使用 access token，
+也不发起网络请求。结果缓存 5 秒；Codex 有新的本地会话事件后，状态卡会在下一次
+缓存刷新时收到最新额度。
 
-今后增加 API 额度、服务器状态时，在 `payload` 下新增同级字段即可，不改变
-`system` 和 `codex` 的含义。
+若尚未使用过 Codex、会话记录中没有额度事件，或最新记录已跨过额度重置时间，桌面
+端会发送 `available: false`，设备端会清除过期额度并显示数据暂不可用。本地事件的
+字段仍可能随 Codex 更新变化，但不会影响账户安全或产生网络请求。
+
+今后增加 API 额度、服务器状态时，新增独立的 `api.update`、`server.update` 等
+消息类型及各自存储器，不改变 `system.update` 和 `codex.update` 的含义。
 
 通用状态值：
 
@@ -403,7 +407,10 @@ BLE 单次写入长度受 MTU 限制。为了第一版实现简单：
 | `encoding` | 原始数据编码，默认 `json` |
 | `data` | 当前分片内容 |
 
-第一版可以先不实现分片，但保留 `payload_too_large` 错误，提醒桌面端缩小消息。
+当前实现已启用自动分片：桌面端对超过 `480 bytes` 的单模块 JSON 使用 `chunk`，每个
+chunk 的 `data` 最多携带 `128 bytes` UTF-8 文本；设备端按顺序重组，收齐后才解析
+原始消息并回一条 ACK。单次完整重组上限为 `1024 bytes`，超出时设备端返回
+`invalid_chunk`。
 
 ## 连接流程
 
@@ -414,7 +421,7 @@ BLE 单次写入长度受 MTU 限制。为了第一版实现简单：
 4. 桌面客户端订阅 TX notify
 5. 桌面客户端发送 hello
 6. 设备端回复 hello.ack 或 ack
-7. 桌面客户端开始周期性发送 heartbeat 和 status.update
+7. 桌面客户端开始周期性发送 heartbeat、system.update、codex.update
 8. 断线后，设备端恢复广播，桌面客户端自动重连
 ```
 
@@ -428,15 +435,15 @@ Status Deck 的桌面端在启动后会自动进入连接维护循环，无需�
 - 写入失败、底层断连或 30 秒未收到心跳时，双方都将当前会话视为失效
 - 桌面端每 5 秒重新尝试扫描连接；ESP32-S3 断线后立即恢复广播
 
-这意味着“实时”数据不需要等待心跳：`status.update` 可在数据变化时立即通过 RX
-写入。心跳只负责确认双方仍活着，不承担状态刷新。
+这意味着“实时”数据不需要等待心跳：`system.update`、`codex.update` 等可在数据
+变化时立即通过 RX 写入。心跳只负责确认双方仍活着，不承担状态刷新。
 
 ## 兼容策略
 
 - `v` 主版本不兼容时，设备端应返回 `invalid_version`
 - 新字段必须向后兼容，旧固件可以忽略不认识的字段
 - 新消息类型应先通过 `hello.features` 协商
-- 固件优先支持 `hello`、`status.update`、`heartbeat`、`ack`、`error`
+- 固件优先支持 `hello`、`system.update`、`codex.update`、`heartbeat`、`ack`、`error`
 
 ## MVP 实现建议
 
@@ -446,7 +453,8 @@ Status Deck 的桌面端在启动后会自动进入连接维护循环，无需�
 - RX 写入 JSON
 - TX notify ACK
 - `hello`
-- `status.update`
+- `system.update`
+- `codex.update`
 - `heartbeat`
 - 基础错误处理
 
