@@ -40,32 +40,59 @@ func NewCollector() *Collector {
 // 电源信息在某些平台不可用，所以 collectPower 会返回 Available=false，
 // 不把它当作整个采集流程的致命错误。
 func (c *Collector) Collect(ctx context.Context) (Snapshot, error) {
-	cpuUsage, err := collectCPU(ctx)
+	performance, err := c.CollectPerformance(ctx)
 	if err != nil {
 		return Snapshot{}, err
 	}
-
-	memory, err := collectMemory(ctx)
+	memory, err := c.CollectMemory(ctx)
 	if err != nil {
 		return Snapshot{}, err
 	}
-
-	diskUsage, err := collectDisk(ctx, c.diskPath)
+	diskUsage, err := c.CollectDisk(ctx)
 	if err != nil {
 		return Snapshot{}, err
 	}
-
-	power := collectPower(ctx)
-	gpu := c.collectGPU(ctx)
 
 	return Snapshot{
 		CollectedAt: time.Now(),
-		CPU:         cpuUsage,
-		GPU:         gpu,
+		CPU:         performance.CPU,
+		GPU:         performance.GPU,
 		Memory:      memory,
 		Disk:        diskUsage,
-		Power:       power,
+		Power:       c.CollectPower(ctx),
 	}, nil
+}
+
+// Performance 将 CPU 与 GPU 作为同一快速刷新域。
+// CPU 适合 2-3 秒刷新；GPU 仍通过 Collector 内部缓存避免每次都执行较重的系统查询。
+type Performance struct {
+	CPU CPU
+	GPU GPU
+}
+
+// CollectPerformance 采集高频的 CPU 与 GPU 使用率。
+func (c *Collector) CollectPerformance(ctx context.Context) (Performance, error) {
+	cpuUsage, err := collectCPU(ctx)
+	if err != nil {
+		return Performance{}, err
+	}
+	return Performance{CPU: cpuUsage, GPU: c.collectGPU(ctx)}, nil
+}
+
+// CollectMemory 采集独立的中频内存数据。
+func (c *Collector) CollectMemory(ctx context.Context) (Memory, error) {
+	return collectMemory(ctx)
+}
+
+// CollectDisk 采集独立的低频系统盘数据。
+func (c *Collector) CollectDisk(ctx context.Context) (Disk, error) {
+	return collectDisk(ctx, c.diskPath)
+}
+
+// CollectPower 采集独立的低频电源信息。没有电池的设备会得到 Available=false，
+// 这不是错误，因此该方法不返回 error。
+func (c *Collector) CollectPower(ctx context.Context) Power {
+	return collectPower(ctx)
 }
 
 // collectCPU 读取所有逻辑核心合并后的使用率。interval=0 不会主动 sleep，

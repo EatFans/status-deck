@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"status-deck/desktop/internal/ble"
+	"status-deck/desktop/internal/statussync"
 )
 
 // Config 是桌面端的总配置。
@@ -16,8 +17,12 @@ type Config struct {
 	BLE ble.Config
 
 	// SyncInterval 是向硬件同步状态数据的间隔。
-	// 当前 run 模式会用到，状态栏模式后续也会复用。
+	// 当前仅旧 run 调试命令使用；状态栏应用使用下面按数据域配置的 SyncPlan。
 	SyncInterval time.Duration
+
+	// SyncPlan 为 CPU/GPU、内存、磁盘电源和 Codex 分别设置同步频率与最长静默时间。
+	// 后续设置页面可直接读写这些字段，而不需要修改同步器实现。
+	SyncPlan statussync.Plan
 
 	// ReconnectInterval 控制设备不可用时的重新扫描频率。
 	// 这不是 BLE 底层连接超时，而是桌面端主动重连策略的间隔。
@@ -40,6 +45,7 @@ func Default() Config {
 			TXUUID:      ble.DefaultTXUUID,
 		},
 		SyncInterval:      2 * time.Second,
+		SyncPlan:          statussync.DefaultPlan(),
 		ReconnectInterval: 5 * time.Second,
 		HeartbeatInterval: 10 * time.Second,
 	}

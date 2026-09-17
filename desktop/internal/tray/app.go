@@ -40,7 +40,7 @@ func NewApp(config config.Config) *App {
 	return &App{
 		config:          config,
 		client:          client,
-		syncer:          statussync.NewSystemService(client, systeminfo.NewCollector(), codexusage.NewLocalProvider(), config.SyncInterval, applog.Printf),
+		syncer:          statussync.NewSystemService(client, systeminfo.NewCollector(), codexusage.NewLocalProvider(), config.SyncPlan, applog.Printf),
 		lifecycleCtx:    ctx,
 		cancelLifecycle: cancel,
 	}
@@ -93,9 +93,9 @@ func (a *App) onReady() {
 	// 应用一启动就开始主动寻找 Status Deck。ESP32 只负责广播，连接和断线重连
 	// 必须由电脑端这个 Central 发起；这里不需要用户手动点“扫描设备”。
 	a.client.Start(a.lifecycleCtx, a.config.ReconnectInterval, a.config.HeartbeatInterval)
-	// 集中同步服务在 BLE 已连接后，每隔 SyncInterval 采集系统信息和 Codex 用量，
-	// 然后分别发送 system.update 与 codex.update。后续数据源也应接入同步服务，
-	// 使用自己的 xxx.update 消息，而非直接竞争 BLE 写入。
+	// 集中同步服务在 BLE 已连接后，以 SyncPlan 为 CPU/GPU、内存、磁盘电源和
+	// Codex 分别调度采集与发送。后续数据源也应接入同步服务，使用自己的
+	// xxx.update 消息，而非直接竞争 BLE 写入。
 	a.syncer.Start(a.lifecycleCtx)
 
 	// systray 菜单点击通过 channel 通知。
@@ -131,6 +131,9 @@ func (a *App) handleBLEEvents(deviceStatus *systray.MenuItem) {
 			deviceStatus.SetTitle(fmt.Sprintf("%s RSSI=%d", name, event.Device.RSSI))
 			a.lastSyncItem.SetTitle("已建立实时连接")
 			applog.Printf("BLE 已连接：name=%s id=%s", name, event.Device.ID)
+			// 不等待最慢的 30 秒任务。刚连上就补齐一份完整快照，后续由各任务的
+			// 变化检测和 MaxSilence 负责降低常态 BLE 写入频率。
+			a.syncer.SyncNow(a.lifecycleCtx)
 		case ble.EventDisconnected:
 			a.statusItem.SetTitle("连接已断开，正在重连...")
 			applog.Printf("BLE 已断开：id=%s", event.Device.ID)
