@@ -68,6 +68,9 @@ type Client struct {
 
 	// scanMu 让手动扫描和自动重连扫描串行，避免同一蓝牙适配器并发扫描。
 	scanMu sync.Mutex
+	// writeMu 保证任何时刻只有一条 GATT 写入在飞行中。心跳、首次 hello 和
+	// 后续各类业务同步都经由同一个 Client，因此不能让不同 goroutine 并发写 RX。
+	writeMu sync.Mutex
 	mu     sync.RWMutex
 
 	addresses map[string]bluetooth.Address
@@ -312,6 +315,9 @@ func (c *Client) discover(device bluetooth.Device, target Device) error {
 // Write 通过 RX 特征值写入一条完整 JSON 消息。实时状态更新使用 Write Without
 // Response，避免每一条都等待 ATT 写响应；关键消息后续可在协议层增加 ACK 重传。
 func (c *Client) Write(_ context.Context, payload []byte) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
 	c.mu.RLock()
 	rx := c.rx
 	c.mu.RUnlock()
@@ -322,6 +328,14 @@ func (c *Client) Write(_ context.Context, payload []byte) error {
 		return fmt.Errorf("write RX characteristic: %w", err)
 	}
 	return nil
+}
+
+// Send 用统一的协议信封发送一条业务消息。
+//
+// 上层同步服务不应该自行拼装 v/id/ts/source/target，这样未来新增 AI 用量、
+// API 额度或服务器状态时，仍然会使用同一份版本与追踪规则。
+func (c *Client) Send(ctx context.Context, messageType string, payload any) error {
+	return c.Write(ctx, newEnvelope(messageType, payload))
 }
 
 // IsConnected 同时检查本地连接资源和底层链路状态。

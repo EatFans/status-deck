@@ -11,11 +11,14 @@ import (
 	"status-deck/desktop/internal/applog"
 	"status-deck/desktop/internal/ble"
 	"status-deck/desktop/internal/config"
+	"status-deck/desktop/internal/statussync"
+	"status-deck/desktop/internal/systeminfo"
 )
 
 type App struct {
 	config config.Config
 	client *ble.Client
+	syncer *statussync.SystemService
 
 	// lifecycleCtx 在托盘退出时取消，自动重连与心跳 goroutine 随之停止。
 	lifecycleCtx    context.Context
@@ -32,9 +35,11 @@ type App struct {
 
 func NewApp(config config.Config) *App {
 	ctx, cancel := context.WithCancel(context.Background())
+	client := ble.NewClient(config.BLE)
 	return &App{
 		config:          config,
-		client:          ble.NewClient(config.BLE),
+		client:          client,
+		syncer:          statussync.NewSystemService(client, systeminfo.NewCollector(), config.SyncInterval, applog.Printf),
 		lifecycleCtx:    ctx,
 		cancelLifecycle: cancel,
 	}
@@ -87,6 +92,9 @@ func (a *App) onReady() {
 	// 应用一启动就开始主动寻找 Status Deck。ESP32 只负责广播，连接和断线重连
 	// 必须由电脑端这个 Central 发起；这里不需要用户手动点“扫描设备”。
 	a.client.Start(a.lifecycleCtx, a.config.ReconnectInterval, a.config.HeartbeatInterval)
+	// 集中同步服务在 BLE 已连接后，每隔 SyncInterval 采集内存、磁盘和电源，
+	// 然后发送一条完整 status.update。后续数据源也应接入同步服务，而非直接写 BLE。
+	a.syncer.Start(a.lifecycleCtx)
 
 	// systray 菜单点击通过 channel 通知。
 	// 每类交互放一个 goroutine，避免阻塞状态栏主循环。

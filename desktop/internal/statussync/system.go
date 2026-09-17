@@ -1,0 +1,107 @@
+// Package statussync 负责把多个本地数据源汇总为对硬件的状态同步。
+//
+// 采集器只负责“拿到数据”，本包负责“何时发送、以什么协议发送”。这样以后增加
+// AI 用量或服务器健康检查时，不会让每个采集器直接竞争 BLE 写入权限。
+package statussync
+
+import (
+	"context"
+	"time"
+
+	"status-deck/desktop/internal/systeminfo"
+)
+
+// Publisher 是同步服务依赖的最小 BLE 能力。
+// ble.Client 满足该接口；保留接口能让该包在不依赖真实蓝牙硬件时单独测试。
+type Publisher interface {
+	IsConnected() bool
+	Send(ctx context.Context, messageType string, payload any) error
+}
+
+// SystemPayload 是 status.update 中第一批接入的数据。
+//
+// 这里不直接序列化 systeminfo.Snapshot：CollectedAt 已由协议信封 ts 表达，
+// 避免每条 BLE 消息携带重复时间字段；系统名称也按项目约定不发送。
+type SystemPayload struct {
+	Memory systeminfo.Memory `json:"memory"`
+	Disk   systeminfo.Disk   `json:"disk"`
+	Power  systeminfo.Power  `json:"power"`
+}
+
+type statusPayload struct {
+	System SystemPayload `json:"system"`
+}
+
+// SystemService 是集中同步服务的第一项实现。
+// 后续可在同一服务中加入 Usage、Services 等缓存，最终仍只经由 Publisher.Send 写 BLE。
+type SystemService struct {
+	publisher Publisher
+	collector *systeminfo.Collector
+	interval  time.Duration
+	logf      func(format string, args ...any)
+}
+
+// NewSystemService 创建系统信息同步服务。
+func NewSystemService(publisher Publisher, collector *systeminfo.Collector, interval time.Duration, logf func(string, ...any)) *SystemService {
+	if interval <= 0 {
+		interval = 2 * time.Second
+	}
+	return &SystemService{
+		publisher: publisher,
+		collector: collector,
+		interval:  interval,
+		logf:      logf,
+	}
+}
+
+// Start 在后台周期同步系统信息。
+//
+// 未连接时不采集、不发送：既减少无意义的 pmset/磁盘查询，也避免日志被“未连接”
+// 错误刷屏。连接恢复后的下一次 tick 会自动发送完整快照，使硬件状态重新对齐。
+func (s *SystemService) Start(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(s.interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.syncOnce(ctx)
+			}
+		}
+	}()
+}
+
+func (s *SystemService) syncOnce(ctx context.Context) {
+	if !s.publisher.IsConnected() {
+		return
+	}
+
+	snapshot, err := s.collector.Collect(ctx)
+	if err != nil {
+		s.log("系统信息采集失败：%v", err)
+		return
+	}
+
+	payload := statusPayload{
+		System: SystemPayload{
+			Memory: snapshot.Memory,
+			Disk:   snapshot.Disk,
+			Power:  snapshot.Power,
+		},
+	}
+	if err := s.publisher.Send(ctx, "status.update", payload); err != nil {
+		s.log("系统信息推送失败：%v", err)
+		return
+	}
+
+	s.log("系统信息已推送：内存 %.1f%%，磁盘 %.1f%%", snapshot.Memory.UsedPercent, snapshot.Disk.UsedPercent)
+}
+
+func (s *SystemService) log(format string, args ...any) {
+	if s.logf != nil {
+		s.logf(format, args...)
+	}
+}
