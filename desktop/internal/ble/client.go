@@ -117,7 +117,7 @@ func (c *Client) ScanWithOptions(ctx context.Context, options ScanOptions) ([]De
 	c.scanMu.Lock()
 	defer c.scanMu.Unlock()
 
-	if err := c.adapter.Enable(); err != nil {
+	if err := enableAdapter(c.adapter); err != nil {
 		return nil, fmt.Errorf("enable BLE adapter: %w", err)
 	}
 	if options.Timeout <= 0 {

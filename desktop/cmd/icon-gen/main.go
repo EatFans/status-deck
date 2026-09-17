@@ -2,8 +2,6 @@
 package main
 
 import (
-	"bytes"
-	"encoding/binary"
 	"flag"
 	"fmt"
 	"os"
@@ -11,11 +9,6 @@ import (
 
 	"status-deck/desktop/internal/appicon"
 )
-
-type iconImage struct {
-	size int
-	png  []byte
-}
 
 func main() {
 	var iconsetDir string
@@ -65,53 +58,14 @@ func writeIconset(directory string) error {
 }
 
 func writeICO(path string) error {
-	images := make([]iconImage, 0, 4)
-	for _, size := range []int{16, 32, 48, 256} {
-		content, err := appicon.PNG(size)
-		if err != nil {
-			return err
-		}
-		images = append(images, iconImage{size: size, png: content})
+	content, err := appicon.ICO()
+	if err != nil {
+		return err
 	}
-
-	var output bytes.Buffer
-	for _, value := range []uint16{0, 1, uint16(len(images))} {
-		if err := binary.Write(&output, binary.LittleEndian, value); err != nil {
-			return err
-		}
-	}
-
-	offset := uint32(6 + 16*len(images))
-	for _, image := range images {
-		dimension := uint8(image.size)
-		if image.size >= 256 {
-			dimension = 0
-		}
-		entry := struct {
-			Width       uint8
-			Height      uint8
-			ColorCount  uint8
-			Reserved    uint8
-			Planes      uint16
-			BitCount    uint16
-			BytesInRes  uint32
-			ImageOffset uint32
-	}{dimension, dimension, 0, 0, 1, 32, uint32(len(image.png)), offset}
-		if err := binary.Write(&output, binary.LittleEndian, entry); err != nil {
-			return err
-		}
-		offset += uint32(len(image.png))
-	}
-	for _, image := range images {
-		if _, err := output.Write(image.png); err != nil {
-			return err
-		}
-	}
-
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, output.Bytes(), 0o644)
+	return os.WriteFile(path, content, 0o644)
 }
 
 func fatalf(format string, args ...any) {
