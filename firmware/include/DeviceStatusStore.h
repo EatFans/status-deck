@@ -64,12 +64,13 @@ struct SystemStatus {
 class DeviceStatusStore {
 public:
   /**
-   * 解析 system.update 的 payload 字段，并原子性地替换当前系统状态。
+   * 解析 system.update 的局部 payload，并原子性地合并当前系统状态。
    *
    * payload 格式：
-   * {"cpu":{...},"memory":{...},"disk":{...},"power":{...}}
+   * {"cpu":{...},"memory":{...}} 或 {"disk":{...},"power":{...}}
    *
-   * 返回 false 表示字段缺失或类型不对；旧状态会被保留，不会被半截数据污染。
+   * 只更新 payload 中出现的字段；未出现字段保留旧值。返回 false 表示没有任何
+   * 可识别字段或出现字段类型不对，旧状态不会被半截数据污染。
    */
   bool updateFromSystemPayload(JsonVariantConst payload, String &error);
 

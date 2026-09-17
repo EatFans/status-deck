@@ -10,13 +10,44 @@ bool DeviceStatusStore::updateFromSystemPayload(JsonVariantConst payload,
     return false;
   }
 
-  // 先解析到临时副本。任何字段出错时直接返回，保留屏幕正在展示的旧状态。
+  // 先解析到临时副本。不同节奏的数据域会发送局部 payload；任何出现的字段
+  // 类型不对时直接返回，保留屏幕正在展示的旧状态。
   SystemStatus next = status_;
-  if (!parseCPU(system["cpu"].as<JsonObjectConst>(), next.cpu, error) ||
-      !parseGPU(system["gpu"].as<JsonObjectConst>(), next.gpu, error) ||
-      !parseMemory(system["memory"].as<JsonObjectConst>(), next.memory, error) ||
-      !parseDisk(system["disk"].as<JsonObjectConst>(), next.disk, error) ||
-      !parsePower(system["power"].as<JsonObjectConst>(), next.power, error)) {
+  bool hasUpdate = false;
+  if (system.containsKey("cpu")) {
+    hasUpdate = true;
+    if (!parseCPU(system["cpu"].as<JsonObjectConst>(), next.cpu, error)) {
+      return false;
+    }
+  }
+  if (system.containsKey("gpu")) {
+    hasUpdate = true;
+    if (!parseGPU(system["gpu"].as<JsonObjectConst>(), next.gpu, error)) {
+      return false;
+    }
+  }
+  if (system.containsKey("memory")) {
+    hasUpdate = true;
+    if (!parseMemory(system["memory"].as<JsonObjectConst>(), next.memory,
+                     error)) {
+      return false;
+    }
+  }
+  if (system.containsKey("disk")) {
+    hasUpdate = true;
+    if (!parseDisk(system["disk"].as<JsonObjectConst>(), next.disk, error)) {
+      return false;
+    }
+  }
+  if (system.containsKey("power")) {
+    hasUpdate = true;
+    if (!parsePower(system["power"].as<JsonObjectConst>(), next.power,
+                    error)) {
+      return false;
+    }
+  }
+  if (!hasUpdate) {
+    error = "system.update has no recognized fields";
     return false;
   }
 
