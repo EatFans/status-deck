@@ -12,6 +12,8 @@
   <string>com.statusdeck.desktop</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
+  <key>CFBundleIconFile</key>
+  <string>StatusDeck</string>
   <key>CFBundleName</key>
   <string>Status Deck</string>
   <key>CFBundlePackageType</key>

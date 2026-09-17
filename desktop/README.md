@@ -67,6 +67,8 @@ desktop/dist/Status-Deck-macos.zip
 
 该脚本使用 ad-hoc 签名，适合本机测试。向其他用户分发时，需要使用 Apple Developer ID 签名并完成 notarization，才能避免 Gatekeeper 的来源警告。
 
+打包过程会从代码生成 `StatusDeck.icns`，并将它放入 `.app/Contents/Resources`。托盘图标与 Finder/Dock 应用图标来自同一份图标定义，不需要额外携带图片文件。
+
 状态栏菜单的“设置 > 开机自启”会管理当前用户的 LaunchAgent：
 
 ```text
@@ -90,6 +92,8 @@ desktop\dist\Status Deck.exe
 desktop\dist\Status-Deck-windows.zip
 ```
 
+脚本会从同一份代码生成 `.ico`，再使用 `rsrc` 临时生成 Windows 资源文件并嵌入 `Status Deck.exe`。最终 `.exe` 不依赖 `.ico` 文件；首次打包时 Go 会下载固定版本的 `github.com/akavel/rsrc` 工具。当前脚本面向 Windows amd64。
+
 “设置 > 开机自启”会在当前用户的注册表中创建或删除以下值，不需要管理员权限：
 
 ```text
@@ -98,6 +102,17 @@ HKCU\Software\Microsoft\Windows\CurrentVersion\Run
 ```
 
 请在启用前将 `Status Deck.exe` 放在稳定位置，例如 `%LOCALAPPDATA%\Status Deck`。若移动或删除可执行文件，需要关闭后重新开启一次开机自启，以更新启动路径。Windows 可能在登录后延后启动后台程序，这是系统的正常行为。
+
+## GitHub Actions 手动打包
+
+仓库包含 `Package Desktop Apps` 工作流。将代码推送到 `main` 后，在 GitHub 仓库的 **Actions** 页面选择该工作流，点击 **Run workflow**，并保持分支为 `main`。工作流会并行打包 macOS 和 Windows，并在运行完成后提供两个可下载构建产物：
+
+```text
+status-deck-macos    -> Status-Deck-macos.zip
+status-deck-windows  -> Status-Deck-windows.zip
+```
+
+工作流只允许 `main` 分支执行；从其他分支手动触发时，打包任务会被跳过。
 
 ## BLE 协议
 
