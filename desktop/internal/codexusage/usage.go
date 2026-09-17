@@ -1,8 +1,7 @@
 // Package codexusage 定义桌面端发送给状态卡的 Codex 用量数据边界。
 //
-// 本包目前只提供数据结构和不可用占位实现，不依赖 Codex 的本地文件、命令或
-// 网络接口。以后确认可靠的数据来源后，只需要新增一个 Provider 实现，不必修改
-// BLE 协议、状态同步调度或设备端存储逻辑。
+// Provider 层将“如何读取 Codex 用量”隔离在本包内，不会让 BLE 协议、状态同步
+// 调度或设备端存储逻辑接触登录凭据。
 package codexusage
 
 import "context"
@@ -18,7 +17,7 @@ type Window struct {
 	ResetLabel       string  `json:"resetLabel"`
 }
 
-// Snapshot 是 status.update.payload.codex 的完整数据。
+// Snapshot 是 codex.update.payload 的完整数据。
 //
 // 当前界面有两个窗口：fiveHour 对应截图中的“5小时”，weekly 对应“1周”。
 // Available 为 false 时，两个窗口会省略，设备端应显示“数据暂不可用”而不是把它

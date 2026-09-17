@@ -19,16 +19,16 @@ type Publisher interface {
 	Send(ctx context.Context, messageType string, payload any) error
 }
 
-// SystemPayload 是 status.update 中第一批接入的数据。
+// SystemPayload 是 system.update 的 payload。
 //
 // 这里不直接序列化 systeminfo.Snapshot：CollectedAt 已由协议信封 ts 表达，
 // 避免每条 BLE 消息携带重复时间字段；系统名称也按项目约定不发送。
 type SystemPayload struct {
-	CPU    CPUWire           `json:"cpu"`
-	GPU    GPUWire           `json:"gpu"`
-	Memory CapacityWire      `json:"memory"`
-	Disk   CapacityWire      `json:"disk"`
-	Power  PowerWire         `json:"power"`
+	CPU    CPUWire      `json:"cpu"`
+	GPU    GPUWire      `json:"gpu"`
+	Memory CapacityWire `json:"memory"`
+	Disk   CapacityWire `json:"disk"`
+	Power  PowerWire    `json:"power"`
 }
 
 // CapacityWire 以 MB 传输容量。屏幕展示不需要 bytes 级精度，使用 MB 可以显著
@@ -55,25 +55,22 @@ type PowerWire struct {
 	OnBattery *bool `json:"onBattery,omitempty"`
 }
 
-type statusPayload struct {
-	System SystemPayload `json:"system"`
-	Codex  codexusage.Snapshot `json:"codex"`
-}
-
-// SystemService 是集中同步服务的第一项实现。
-// 后续可在同一服务中加入 Usage、Services 等缓存，最终仍只经由 Publisher.Send 写 BLE。
+// SystemService 负责集中调度多个独立数据域的同步。
+// 每个数据域各用一条 BLE 业务消息，互不挤占单个 payload 的长度预算；后续 API、
+// 服务器等模块也应采用各自的 xxx.update 类型，而不是重新拼回一个总状态包。
 type SystemService struct {
-	publisher     Publisher
-	collector     *systeminfo.Collector
-	codexProvider codexusage.Provider
-	interval      time.Duration
-	logf          func(format string, args ...any)
+	publisher      Publisher
+	collector      *systeminfo.Collector
+	codexProvider  codexusage.Provider
+	interval       time.Duration
+	logf           func(format string, args ...any)
+	lastCodexError string
 }
 
 // NewSystemService 创建集中状态同步服务。
 //
-// collector 和 codexProvider 分别负责不同数据域；服务将它们合成一条
-// status.update，确保每次屏幕刷新看到的是同一时刻附近的完整状态快照。
+// collector 和 codexProvider 分别负责不同数据域；服务按顺序发送 system.update
+// 与 codex.update。这样一个模块变大或暂时失败，不会阻断其他模块的独立演进。
 func NewSystemService(publisher Publisher, collector *systeminfo.Collector, codexProvider codexusage.Provider, interval time.Duration, logf func(string, ...any)) *SystemService {
 	if interval <= 0 {
 		interval = 2 * time.Second
@@ -121,44 +118,54 @@ func (s *SystemService) syncOnce(ctx context.Context) {
 		return
 	}
 
-	// Codex 数据暂未接入真实来源时，UnavailableProvider 会返回 available=false。
-	// 即使未来的真实 Provider 某次采集失败，也仍发送“不可用”状态，避免设备端
-	// 长期展示已经过期的额度数字。
+	// LocalProvider 从 Codex 已写入本机的会话事件读取最近额度；若尚未产生会话、
+	// 本地记录跨过重置时间或格式变化，仍发送“不可用”状态，避免设备端长期展示
+	// 已经过期的额度数字。
 	codexSnapshot, err := s.codexProvider.Collect(ctx)
 	if err != nil {
-		s.log("Codex 用量采集失败：%v", err)
+		// 缓存 Provider 在失效时可能连续返回相同错误。只记录首次或错误变化，
+		// 让状态栏日志仍保留问题线索而不会每个 2 秒同步周期刷屏。
+		if message := err.Error(); message != s.lastCodexError {
+			s.log("Codex 用量采集失败：%v", err)
+			s.lastCodexError = message
+		}
 		codexSnapshot = codexusage.Snapshot{Available: false}
+	} else if s.lastCodexError != "" {
+		s.log("Codex 用量采集已恢复")
+		s.lastCodexError = ""
 	}
 
-	payload := statusPayload{
-		System: SystemPayload{
-			CPU: CPUWire{UsagePercent: roundPercent(snapshot.CPU.UsagePercent)},
-			GPU: GPUWire{Available: snapshot.GPU.Available, UsagePercent: roundPercent(snapshot.GPU.UsagePercent)},
-			Memory: CapacityWire{
-				TotalMB:     bytesToMB(snapshot.Memory.TotalBytes),
-				UsedMB:      bytesToMB(snapshot.Memory.UsedBytes),
-				UsedPercent: roundPercent(snapshot.Memory.UsedPercent),
-			},
-			Disk: CapacityWire{
-				TotalMB:     bytesToMB(snapshot.Disk.TotalBytes),
-				UsedMB:      bytesToMB(snapshot.Disk.UsedBytes),
-				UsedPercent: roundPercent(snapshot.Disk.UsedPercent),
-			},
-			Power: PowerWire{
-				Available: snapshot.Power.Available,
-				Percent:   snapshot.Power.Percent,
-				Charging:  snapshot.Power.Charging,
-				OnBattery: snapshot.Power.OnBattery,
-			},
+	systemPayload := SystemPayload{
+		CPU: CPUWire{UsagePercent: roundPercent(snapshot.CPU.UsagePercent)},
+		GPU: GPUWire{Available: snapshot.GPU.Available, UsagePercent: roundPercent(snapshot.GPU.UsagePercent)},
+		Memory: CapacityWire{
+			TotalMB:     bytesToMB(snapshot.Memory.TotalBytes),
+			UsedMB:      bytesToMB(snapshot.Memory.UsedBytes),
+			UsedPercent: roundPercent(snapshot.Memory.UsedPercent),
 		},
-		Codex: codexSnapshot,
+		Disk: CapacityWire{
+			TotalMB:     bytesToMB(snapshot.Disk.TotalBytes),
+			UsedMB:      bytesToMB(snapshot.Disk.UsedBytes),
+			UsedPercent: roundPercent(snapshot.Disk.UsedPercent),
+		},
+		Power: PowerWire{
+			Available: snapshot.Power.Available,
+			Percent:   snapshot.Power.Percent,
+			Charging:  snapshot.Power.Charging,
+			OnBattery: snapshot.Power.OnBattery,
+		},
 	}
-	if err := s.publisher.Send(ctx, "status.update", payload); err != nil {
+	if err := s.publisher.Send(ctx, "system.update", systemPayload); err != nil {
 		s.log("系统信息推送失败：%v", err)
+	} else {
+		s.log("系统信息已推送：CPU %.1f%%，GPU %.1f%%，内存 %.1f%%，磁盘 %.1f%%", snapshot.CPU.UsagePercent, snapshot.GPU.UsagePercent, snapshot.Memory.UsedPercent, snapshot.Disk.UsedPercent)
+	}
+
+	if err := s.publisher.Send(ctx, "codex.update", codexSnapshot); err != nil {
+		s.log("Codex 用量推送失败：%v", err)
 		return
 	}
-
-	s.log("状态信息已推送：CPU %.1f%%，GPU %.1f%%，内存 %.1f%%，磁盘 %.1f%%，Codex=%t", snapshot.CPU.UsagePercent, snapshot.GPU.UsagePercent, snapshot.Memory.UsedPercent, snapshot.Disk.UsedPercent, codexSnapshot.Available)
+	s.log("Codex 用量已推送：可用=%t", codexSnapshot.Available)
 }
 
 func bytesToMB(value uint64) uint64 { return value / (1024 * 1024) }

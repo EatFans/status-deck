@@ -3,6 +3,7 @@ package ble
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -15,6 +16,11 @@ const (
 	DefaultServiceUUID = "7f3a0001-6c21-4b7d-9d5d-1f4f2b3a9000"
 	DefaultRXUUID      = "7f3a0002-6c21-4b7d-9d5d-1f4f2b3a9000"
 	DefaultTXUUID      = "7f3a0003-6c21-4b7d-9d5d-1f4f2b3a9000"
+
+	// macOS 当前连接上的 RX 特征值对较长的 Write With Response 会直接拒绝。
+	// 值故意留出余量；真正的大消息通过 chunk 信封拆成更小的 UTF-8 片段发送。
+	maxDirectWriteBytes = 480
+	chunkDataBytes      = 128
 )
 
 // Config 是 BLE 客户端配置。UUID 分别对应设备的 GATT 服务、RX 和 TX 特征值。
@@ -71,7 +77,7 @@ type Client struct {
 	// writeMu 保证任何时刻只有一条 GATT 写入在飞行中。心跳、首次 hello 和
 	// 后续各类业务同步都经由同一个 Client，因此不能让不同 goroutine 并发写 RX。
 	writeMu sync.Mutex
-	mu     sync.RWMutex
+	mu      sync.RWMutex
 
 	addresses map[string]bluetooth.Address
 	device    *bluetooth.Device
@@ -312,11 +318,11 @@ func (c *Client) discover(device bluetooth.Device, target Device) error {
 	return nil
 }
 
-// Write 通过 RX 特征值写入一条完整 JSON 消息。
+// Write 通过 RX 特征值写入一条 JSON 消息。
 //
-// 状态卡当前每 2 秒会发送一次数百字节的完整快照。macOS 的
-// Write Without Response 有较小的在途缓冲上限，满后会阻塞心跳并导致设备误判
-// 离线；因此这里使用带响应写入，让蓝牙栈提供可靠背压。
+// 小消息直接写入；超过单次安全长度的大消息会自动封装为多个 chunk。每个 chunk
+// 都采用带响应写入并由 writeMu 串行化，设备端按 index 重组后再解析原始 JSON。
+// 这同时规避 macOS 的单次 GATT 写入上限和 Write Without Response 的缓冲拥塞。
 func (c *Client) Write(_ context.Context, payload []byte) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
@@ -327,10 +333,103 @@ func (c *Client) Write(_ context.Context, payload []byte) error {
 	if rx == nil || !c.IsConnected() {
 		return fmt.Errorf("Status Deck is not connected")
 	}
+	if len(payload) <= maxDirectWriteBytes {
+		return c.writeRaw(rx, payload)
+	}
+	return c.writeChunked(rx, payload)
+}
+
+func (c *Client) writeRaw(rx *bluetooth.DeviceCharacteristic, payload []byte) error {
 	if _, err := rx.Write(payload); err != nil {
 		return fmt.Errorf("write RX characteristic: %w", err)
 	}
 	return nil
+}
+
+// writeChunked 将一个完整 UTF-8 JSON 信封拆成多个独立 JSON chunk 信封。
+//
+// data 直接是原 JSON 的字符串片段，因此必须在 UTF-8 字符边界分割；否则像
+// "9月19日" 这样的中文重置标签可能在 json.Marshal 时被替换，导致设备端无法
+// 重组原始消息。分片大小保守设置为 128 bytes，连同 chunk 信封也远低于当前
+// GATT 写入上限。
+func (c *Client) writeChunked(rx *bluetooth.DeviceCharacteristic, payload []byte) error {
+	parts := splitUTF8(payload, chunkDataBytes)
+	if len(parts) == 0 {
+		return errors.New("cannot split empty BLE payload")
+	}
+
+	var original struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(payload, &original); err != nil || original.ID == "" {
+		return fmt.Errorf("decode original BLE message for chunking: %w", err)
+	}
+
+	for index, part := range parts {
+		chunk := struct {
+			Version int    `json:"v"`
+			ID      string `json:"id"`
+			Type    string `json:"type"`
+			TS      int64  `json:"ts"`
+			Source  string `json:"source"`
+			Target  string `json:"target"`
+			Payload struct {
+				Ref      string `json:"ref"`
+				Index    int    `json:"index"`
+				Total    int    `json:"total"`
+				Encoding string `json:"encoding"`
+				Data     string `json:"data"`
+			} `json:"payload"`
+		}{
+			Version: 1,
+			ID:      fmt.Sprintf("%s_chunk_%d", original.ID, index),
+			Type:    "chunk",
+			TS:      time.Now().UnixMilli(),
+			Source:  "desktop",
+			Target:  "device",
+		}
+		chunk.Payload.Ref = original.ID
+		chunk.Payload.Index = index
+		chunk.Payload.Total = len(parts)
+		chunk.Payload.Encoding = "json"
+		chunk.Payload.Data = string(part)
+
+		encoded, err := json.Marshal(chunk)
+		if err != nil {
+			return fmt.Errorf("encode BLE chunk %d: %w", index, err)
+		}
+		if err := c.writeRaw(rx, encoded); err != nil {
+			return fmt.Errorf("write BLE chunk %d/%d: %w", index+1, len(parts), err)
+		}
+	}
+	return nil
+}
+
+// splitUTF8 返回可独立转换为 string 的字节片段。payload 来自 json.Marshal，
+// 因而本身是有效 UTF-8；只需避免切在一个多字节 rune 的中间。
+func splitUTF8(payload []byte, size int) [][]byte {
+	if size <= 0 || len(payload) == 0 {
+		return nil
+	}
+	parts := make([][]byte, 0, (len(payload)+size-1)/size)
+	for start := 0; start < len(payload); {
+		end := start + size
+		if end >= len(payload) {
+			parts = append(parts, payload[start:])
+			break
+		}
+		for end > start && payload[end]&0xc0 == 0x80 {
+			end--
+		}
+		if end == start {
+			// 当前 size 比一个 rune 还短时宁可原样切分。本项目的 128 bytes
+			// 远大于 UTF-8 最大 rune 长度，此分支只是避免未来配置误用死循环。
+			end = start + size
+		}
+		parts = append(parts, payload[start:end])
+		start = end
+	}
+	return parts
 }
 
 // Send 用统一的协议信封发送一条业务消息。

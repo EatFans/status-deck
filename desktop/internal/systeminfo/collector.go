@@ -12,7 +12,7 @@ import (
 
 // Collector 负责采集当前电脑的基础资源状态。
 //
-// 当前由桌面端的 statussync 集中同步服务调用，并通过 BLE status.update 发送。
+// 当前由桌面端的 statussync 集中同步服务调用，并通过 BLE system.update 发送。
 // 采集范围只包含：
 // - 内存使用情况
 // - 磁盘使用情况
