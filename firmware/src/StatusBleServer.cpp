@@ -78,7 +78,11 @@ void StatusBleServer::begin(const Config &config) {
       NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
 
   // 初始值主要用于调试：电脑端连接后读取 TX，可以看到设备已准备好。
-  txCharacteristic_->setValue("ready");
+  // 不使用 setValue("...") 的泛型重载。经典 ESP32 上它可能把字符串指针本身
+  // 当成 4 字节数据保存，而不是保存字符串内容。
+  const char readyMessage[] = "ready";
+  txCharacteristic_->setValue(
+      reinterpret_cast<const uint8_t *>(readyMessage), sizeof(readyMessage) - 1);
 
   // 服务创建完以后必须 start，随后才能广播。
   service->start();
@@ -133,7 +137,17 @@ bool StatusBleServer::notify(const String &message) {
 
   // BLE 单包数据长度有限。后续如果要发较大的 JSON，需要在协议层做分片。
   // 当前 MVP 先假设消息较短，用于 ACK、连接状态和调试信息。
-  txCharacteristic_->setValue(message.c_str());
+  // 串口日志用于与桌面端的 notify 日志交叉验证：若这里完整打印 JSON、
+  // 但桌面端仍只收到异常字节，则问题位于 macOS BLE 客户端实现而非 ESP32。
+  Serial.print("BLE TX bytes: ");
+  Serial.println(message.length());
+  Serial.print("BLE TX: ");
+  Serial.println(message);
+
+  // 必须同时传入字节指针与长度。只传 message.c_str() 会命中 NimBLE 的
+  // 泛型模板重载，并把 char* 地址误当作消息内容发送，表现为固定的 4 字节乱码。
+  txCharacteristic_->setValue(
+      reinterpret_cast<const uint8_t *>(message.c_str()), message.length());
   txCharacteristic_->notify();
   return true;
 }
