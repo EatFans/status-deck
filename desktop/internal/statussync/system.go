@@ -132,13 +132,38 @@ func NewSystemService(publisher Publisher, collector *systeminfo.Collector, code
 
 // Start 为每个数据域启动独立轻量定时器。
 // 未连接时任务不会采集，避免磁盘、GPU 和会话文件查询白白消耗资源；设备重新连接
-// 后，每个任务在下一次 tick 自动恢复同步。
+// 后，由上层收到 EventConnected 后调用 SyncNow 立即补齐完整状态，随后各任务继续
+// 按自己的 tick 执行增量同步。
 func (s *SystemService) Start(ctx context.Context) {
 	for _, task := range []syncTask{
-		{name: "performance", schedule: s.plan.Performance, run: s.syncPerformance},
-		{name: "memory", schedule: s.plan.Memory, run: s.syncMemory},
-		{name: "storage_power", schedule: s.plan.StoragePower, run: s.syncStoragePower},
-		{name: "codex", schedule: s.plan.Codex, run: s.syncCodex},
+		{
+			name:     "performance",
+			schedule: s.plan.Performance,
+			run: func(ctx context.Context) {
+				s.syncPerformance(ctx, false)
+			},
+		},
+		{
+			name:     "memory",
+			schedule: s.plan.Memory,
+			run: func(ctx context.Context) {
+				s.syncMemory(ctx, false)
+			},
+		},
+		{
+			name:     "storage_power",
+			schedule: s.plan.StoragePower,
+			run: func(ctx context.Context) {
+				s.syncStoragePower(ctx, false)
+			},
+		},
+		{
+			name:     "codex",
+			schedule: s.plan.Codex,
+			run: func(ctx context.Context) {
+				s.syncCodex(ctx, false)
+			},
+		},
 	} {
 		task := task
 		go s.runTask(ctx, task)
@@ -147,14 +172,28 @@ func (s *SystemService) Start(ctx context.Context) {
 
 // SyncNow 在设备刚建立连接后补齐一份完整初始状态。
 //
-// 这不是额外的高频循环：各任务随后仍遵循自己的 Interval。publishIfDue 会记录这次
-// 初始发送，因此紧接着到来的定时 tick 若内容未变会自动跳过，不会造成重复写入。
+// 此方法会绕过“内容未变化则跳过”的常态去重策略：屏幕端在断线期间可能已经清空
+// 页面，重连后即使桌面端数据没有变化，也必须重新收到完整快照。四个数据域并行
+// 采集以缩短首屏等待时间；BLE 客户端自身会将实际写入串行化，保证 GATT 安全。
+//
+// 这不是额外的高频循环：初始同步完成后，各任务仍遵循自己的 Interval，随后的
+// 定时 tick 会恢复增量去重策略。
 func (s *SystemService) SyncNow(ctx context.Context) {
 	go func() {
-		s.syncPerformance(ctx)
-		s.syncMemory(ctx)
-		s.syncStoragePower(ctx)
-		s.syncCodex(ctx)
+		var group sync.WaitGroup
+		for _, task := range []func(context.Context, bool){
+			s.syncPerformance,
+			s.syncMemory,
+			s.syncStoragePower,
+			s.syncCodex,
+		} {
+			group.Add(1)
+			go func(task func(context.Context, bool)) {
+				defer group.Done()
+				task(ctx, true)
+			}(task)
+		}
+		group.Wait()
 	}()
 }
 
@@ -173,7 +212,7 @@ func (s *SystemService) runTask(ctx context.Context, task syncTask) {
 	}
 }
 
-func (s *SystemService) syncPerformance(ctx context.Context) {
+func (s *SystemService) syncPerformance(ctx context.Context, force bool) {
 	s.performanceMu.Lock()
 	defer s.performanceMu.Unlock()
 	if !s.publisher.IsConnected() {
@@ -188,14 +227,14 @@ func (s *SystemService) syncPerformance(ctx context.Context) {
 		CPU: &CPUWire{UsagePercent: roundPercent(performance.CPU.UsagePercent)},
 		GPU: &GPUWire{Available: performance.GPU.Available, UsagePercent: roundPercent(performance.GPU.UsagePercent)},
 	}
-	if sent, err := s.publishIfDue(ctx, "performance", s.plan.Performance, "system.update", payload); err != nil {
+	if sent, err := s.publishIfDue(ctx, "performance", s.plan.Performance, "system.update", payload, force); err != nil {
 		s.log("性能信息推送失败：%v", err)
 	} else if sent {
 		s.log("性能信息已推送：CPU %.1f%%，GPU %.1f%%", performance.CPU.UsagePercent, performance.GPU.UsagePercent)
 	}
 }
 
-func (s *SystemService) syncMemory(ctx context.Context) {
+func (s *SystemService) syncMemory(ctx context.Context, force bool) {
 	s.memoryMu.Lock()
 	defer s.memoryMu.Unlock()
 	if !s.publisher.IsConnected() {
@@ -209,14 +248,14 @@ func (s *SystemService) syncMemory(ctx context.Context) {
 	payload := SystemPayload{Memory: &CapacityWire{
 		TotalMB: bytesToMB(memory.TotalBytes), UsedMB: bytesToMB(memory.UsedBytes), UsedPercent: roundPercent(memory.UsedPercent),
 	}}
-	if sent, err := s.publishIfDue(ctx, "memory", s.plan.Memory, "system.update", payload); err != nil {
+	if sent, err := s.publishIfDue(ctx, "memory", s.plan.Memory, "system.update", payload, force); err != nil {
 		s.log("内存信息推送失败：%v", err)
 	} else if sent {
 		s.log("内存信息已推送：%.1f%%", memory.UsedPercent)
 	}
 }
 
-func (s *SystemService) syncStoragePower(ctx context.Context) {
+func (s *SystemService) syncStoragePower(ctx context.Context, force bool) {
 	s.storagePowerMu.Lock()
 	defer s.storagePowerMu.Unlock()
 	if !s.publisher.IsConnected() {
@@ -232,14 +271,14 @@ func (s *SystemService) syncStoragePower(ctx context.Context) {
 		Disk:  &CapacityWire{TotalMB: bytesToMB(disk.TotalBytes), UsedMB: bytesToMB(disk.UsedBytes), UsedPercent: roundPercent(disk.UsedPercent)},
 		Power: &PowerWire{Available: power.Available, Percent: power.Percent, Charging: power.Charging, OnBattery: power.OnBattery},
 	}
-	if sent, err := s.publishIfDue(ctx, "storage_power", s.plan.StoragePower, "system.update", payload); err != nil {
+	if sent, err := s.publishIfDue(ctx, "storage_power", s.plan.StoragePower, "system.update", payload, force); err != nil {
 		s.log("磁盘和电源信息推送失败：%v", err)
 	} else if sent {
 		s.log("磁盘和电源信息已推送：磁盘 %.1f%%", disk.UsedPercent)
 	}
 }
 
-func (s *SystemService) syncCodex(ctx context.Context) {
+func (s *SystemService) syncCodex(ctx context.Context, force bool) {
 	s.codexMu.Lock()
 	defer s.codexMu.Unlock()
 	if !s.publisher.IsConnected() {
@@ -256,7 +295,7 @@ func (s *SystemService) syncCodex(ctx context.Context) {
 		s.log("Codex 用量采集已恢复")
 		s.lastCodexError = ""
 	}
-	if sent, err := s.publishIfDue(ctx, "codex", s.plan.Codex, "codex.update", snapshot); err != nil {
+	if sent, err := s.publishIfDue(ctx, "codex", s.plan.Codex, "codex.update", snapshot, force); err != nil {
 		s.log("Codex 用量推送失败：%v", err)
 	} else if sent {
 		s.log("Codex 用量已推送：可用=%t", snapshot.Available)
@@ -266,7 +305,7 @@ func (s *SystemService) syncCodex(ctx context.Context) {
 // publishIfDue 通过序列化后的 payload 判断内容是否变化。这样无需为每种新模块
 // 手写比较器；MaxSilence 仍会确保长期静止的数据偶尔重新发送以修正连接恢复后的
 // 显示状态。
-func (s *SystemService) publishIfDue(ctx context.Context, key string, schedule TaskSchedule, messageType string, payload any) (bool, error) {
+func (s *SystemService) publishIfDue(ctx context.Context, key string, schedule TaskSchedule, messageType string, payload any, force bool) (bool, error) {
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return false, err
@@ -276,7 +315,9 @@ func (s *SystemService) publishIfDue(ctx context.Context, key string, schedule T
 	s.stateMu.Lock()
 	previous, exists := s.lastSent[key]
 	unchanged := exists && string(previous.payload) == string(encoded)
-	due := !exists || !unchanged || now.Sub(previous.at) >= schedule.MaxSilence
+	// force 仅用于 BLE 刚重连的完整快照。此时设备端可能已清空旧状态，不能因为
+	// 桌面端缓存恰好一致就跳过发送；常态定时同步仍按变化和 MaxSilence 去重。
+	due := force || !exists || !unchanged || now.Sub(previous.at) >= schedule.MaxSilence
 	s.stateMu.Unlock()
 	if !due {
 		return false, nil
