@@ -2,11 +2,11 @@
 
 #include <cstring>
 
-bool DeviceStatusStore::updateFromStatusPayload(JsonVariantConst payload,
+bool DeviceStatusStore::updateFromSystemPayload(JsonVariantConst payload,
                                                  String &error) {
-  JsonObjectConst system = payload["system"].as<JsonObjectConst>();
+  JsonObjectConst system = payload.as<JsonObjectConst>();
   if (system.isNull()) {
-    error = "missing payload.system";
+    error = "invalid system.update payload";
     return false;
   }
 

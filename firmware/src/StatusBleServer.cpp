@@ -1,5 +1,7 @@
 #include "StatusBleServer.h"
 
+#include <cstring>
+
 namespace {
 // 断开连接后，每隔一段时间检查一次广播状态。
 // 不需要每个 loop 都调用 startAdvertising()，否则会让日志和 BLE 状态变得很吵。
@@ -18,6 +20,13 @@ void StatusBleServer::begin() {
 
 void StatusBleServer::begin(const Config &config) {
   config_ = config;
+
+  // 回调与业务解析之间使用固定长度队列。创建失败时仍允许 BLE 启动，但入站消息
+  // 会被丢弃并在串口说明原因，便于定位极端内存不足问题。
+  inboundQueue_ = xQueueCreate(kInboundQueueDepth, sizeof(InboundMessage));
+  if (inboundQueue_ == nullptr) {
+    Serial.println("BLE inbound queue allocation failed");
+  }
 
   Serial.println("BLE init");
   Serial.print("  device: ");
@@ -42,10 +51,10 @@ void StatusBleServer::begin(const Config &config) {
   //
   // 参数含义：
   // - bonding: 让电脑端和 ESP32-S3 可以保存绑定关系
-  // - mitm: 中间人保护；NoInputNoOutput 下实际保护能力有限
-  // - sc: Secure Connections
-  NimBLEDevice::setSecurityAuth(config_.enableBonding, config_.enableBonding,
-                                true);
+  // - mitm: 此硬件没有键盘、确认键或配对码输入，必须关闭；若要求 MITM，macOS
+  //   可能在首次 GATT Write 时等待一个永远无法完成的交互配对，最终表现为超时
+  // - sc: 在设备能力允许时使用 Secure Connections
+  NimBLEDevice::setSecurityAuth(config_.enableBonding, false, true);
   NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT);
 
   // 配置配对时交换哪些密钥。ENC 用于加密，ID 用于身份解析。
@@ -90,6 +99,15 @@ void StatusBleServer::begin(const Config &config) {
 }
 
 void StatusBleServer::loop() {
+  // 在 Arduino loop 任务中执行 JSON 解析与业务逻辑。必须在处理心跳和广播之前
+  // 及时排空队列，否则连续 chunk 会填满这个有意保持很小的缓冲区。
+  if (inboundQueue_ != nullptr && messageHandler_ != nullptr) {
+    InboundMessage message;
+    while (xQueueReceive(inboundQueue_, &message, 0) == pdTRUE) {
+      messageHandler_(String(message.data));
+    }
+  }
+
   const uint32_t now = millis();
 
   // BLE 物理链路可能尚未触发断开回调，但桌面应用已经退出或电脑休眠。
@@ -209,16 +227,33 @@ void StatusBleServer::onWrite(NimBLECharacteristic *characteristic) {
     return;
   }
 
-  // NimBLE 返回 std::string。这里转换成 Arduino String，方便主程序处理。
+  // NimBLE 返回 std::string。回调本身运行在 nimble_host 任务，不能在这里进行
+  // ArduinoJson 解析、字符串拼接或显示刷新，否则很容易耗尽蓝牙任务栈。
   std::string value = characteristic->getValue();
   Serial.print("BLE write bytes: ");
   Serial.println(value.length());
 
-  // 第一版不引入 JSON 解析库，先做最轻量的协议识别。桌面端的 hello、heartbeat
-  // 和 status.update 都会让设备确认“电脑应用仍正常工作”。后续 UI 层接入
-  // ArduinoJson 后，可在 messageHandler_ 内做完整字段校验和业务分发。
+  if (value.length() >= kInboundMessageBytes) {
+    Serial.println("BLE write rejected: message exceeds inbound queue limit");
+    return;
+  }
+  if (inboundQueue_ == nullptr) {
+    Serial.println("BLE write dropped: inbound queue unavailable");
+    return;
+  }
+
+  InboundMessage message;
+  memcpy(message.data, value.data(), value.length());
+  message.data[value.length()] = '\0';
+  if (xQueueSend(inboundQueue_, &message, 0) != pdTRUE) {
+    // 队列满说明桌面端写入速度超过当前 loop 的处理速度。分片发送使用带响应写入，
+    // 正常情况下不会发生；丢弃后由下一轮完整状态同步恢复即可。
+    Serial.println("BLE write dropped: inbound queue full");
+    return;
+  }
+
+  // 已成功进入业务队列的消息视为桌面端在线。hello、heartbeat 和各个 xxx.update
+  // 都会刷新这个时间；真正的 JSON 解析稍后由 loop 中的回调完成。
   lastDesktopMessageMs_ = millis();
   desktopOnline_ = true;
-
-  messageHandler_(String(value.c_str()));
 }

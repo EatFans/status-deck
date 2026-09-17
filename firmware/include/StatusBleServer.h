@@ -2,6 +2,8 @@
 
 #include <Arduino.h>
 #include <NimBLEDevice.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
 
 /**
  * StatusBleServer
@@ -56,8 +58,9 @@ public:
    *   ESP32-S3 用 notify 从这个特征值向电脑端推送消息。
    *
    * enableBonding:
-   *   开启后允许电脑端和 ESP32-S3 建立绑定关系。
-   *   这有助于电脑端记住设备，实现后续更顺滑的自动重连体验。
+   *   开启后允许电脑端和 ESP32-S3 建立无输入/无显示（Just Works）绑定关系。
+   *   这有助于电脑端记住设备，实现后续更顺滑的自动重连体验。设备没有配对码
+   *   输入能力，因此不能要求 MITM 验证。
    */
   struct Config {
     const char *deviceName = "Status Deck";
@@ -124,6 +127,15 @@ public:
   bool notify(const String &message);
 
 private:
+  // 单个 GATT 写入消息的上限。桌面端会将更大的业务消息拆成 chunk，因此这里不
+  // 需要为整条状态快照分配巨大缓冲区。固定大小也避免 BLE 回调里使用大块栈内存。
+  static constexpr size_t kInboundMessageBytes = 512;
+  static constexpr size_t kInboundQueueDepth = 4;
+
+  struct InboundMessage {
+    char data[kInboundMessageBytes] = {};
+  };
+
   /**
    * 启动广播。
    *
@@ -159,6 +171,10 @@ private:
 
   // 用户层消息回调。收到电脑端写入的数据后会调用它。
   MessageHandler messageHandler_ = nullptr;
+
+  // NimBLE 回调运行在 nimble_host 的小栈线程。onWrite 只能快速复制数据入队；
+  // JSON 解析和业务回调由 Arduino loop 任务执行，避免撑爆蓝牙协议栈。
+  QueueHandle_t inboundQueue_ = nullptr;
 
   // 当前连接状态。
   bool connected_ = false;

@@ -30,12 +30,12 @@ struct CodexUsageStatus {
 class CodexUsageStore {
 public:
   /**
-   * 从 status.update 的 payload 中读取 payload.codex。
+   * 从 codex.update 的 payload 中读取 Codex 用量。
    *
-   * codex 字段不存在时返回 true 且保留现有内容，方便兼容旧版桌面端。若字段
-   * 存在但格式错误则返回 false，旧数据同样不会被半截数据覆盖。
+   * payload 格式：{"available":true,"fiveHour":{...},"weekly":{...}}。
+   * 字段格式错误时返回 false，旧数据不会被半截数据覆盖。
    */
-  bool updateFromStatusPayload(JsonVariantConst payload, String &error);
+  bool updateFromCodexPayload(JsonVariantConst payload, String &error);
 
   /** 返回当前完整 Codex 用量状态，供未来显示页面读取。 */
   const CodexUsageStatus &current() const;

@@ -2,6 +2,7 @@
 #include <ArduinoJson.h>
 #include <cstring>
 
+#include "BleChunkAssembler.h"
 #include "CodexUsageStore.h"
 #include "DeviceStatusStore.h"
 #include "StatusBleServer.h"
@@ -18,19 +19,25 @@ DeviceStatusStore deviceStatus;
 // 因此不会和 CPU、内存等系统信息产生耦合。
 CodexUsageStore codexUsage;
 
+// 大于单次 GATT 写入上限的桌面端消息会先在这里重组，再进入下面原有的 JSON
+// 解析和状态存储流程。显示层不需要知道 BLE 分片的存在。
+BleChunkAssembler chunkAssembler;
+
 /**
  * 电脑端写入 BLE RX 特征值时会触发这个回调。
  *
- * 当前支持 hello、heartbeat 和 status.update：
+ * 当前支持 hello、heartbeat、system.update 和 codex.update：
  * - hello / heartbeat：确认通信链路仍正常
- * - status.update：解析系统信息与 Codex 用量，分别写入各自的状态存储器
+ * - system.update：解析系统信息并写入 deviceStatus
+ * - codex.update：解析 Codex 用量并写入 codexUsage
  */
 void handleBleMessage(const String &message) {
   Serial.print("BLE RX: ");
   Serial.println(message);
 
-  // 文档规定的首版消息体不大。1024 bytes 足够容纳内存、磁盘和电源快照，
-  // 后续引入更大页面数据时，应按 docs/ble-protocol.md 的 chunk 机制分片。
+  // 独立模块消息通常远小于单次 GATT 上限。即使通过 chunk 重组，当前协议也将
+  // 单模块限制在 1024 bytes；该对象现在运行在 Arduino loop 任务，不占用 NimBLE
+  // 蓝牙回调线程的栈。
   StaticJsonDocument<1024> document;
   DeserializationError jsonError = deserializeJson(document, message);
   if (jsonError) {
@@ -41,19 +48,31 @@ void handleBleMessage(const String &message) {
   }
 
   const char *type = document["type"] | "";
-  if (strcmp(type, "status.update") == 0) {
-    String statusError;
-    if (!deviceStatus.updateFromStatusPayload(document["payload"], statusError)) {
-      Serial.print("status.update rejected: ");
-      Serial.println(statusError);
-      statusBle.notify("{\"v\":1,\"type\":\"error\",\"source\":\"device\",\"payload\":{\"code\":\"invalid_status\"}}");
+  if (strcmp(type, "chunk") == 0) {
+    String completeMessage;
+    String chunkError;
+    if (!chunkAssembler.append(document["payload"].as<JsonObjectConst>(),
+                               completeMessage, chunkError)) {
+      Serial.print("BLE chunk rejected: ");
+      Serial.println(chunkError);
+      statusBle.notify("{\"v\":1,\"type\":\"error\",\"source\":\"device\",\"payload\":{\"code\":\"invalid_chunk\"}}");
       return;
     }
 
-    if (!codexUsage.updateFromStatusPayload(document["payload"], statusError)) {
-      Serial.print("Codex usage rejected: ");
+    // 未收齐时不 ACK，避免每个业务更新产生多条无用 notify；最后一个 chunk 收齐
+    // 后递归走原始完整消息，现有业务成功路径会发送一条 ACK。
+    if (completeMessage.length() > 0) {
+      handleBleMessage(completeMessage);
+    }
+    return;
+  }
+
+  if (strcmp(type, "system.update") == 0) {
+    String statusError;
+    if (!deviceStatus.updateFromSystemPayload(document["payload"], statusError)) {
+      Serial.print("system.update rejected: ");
       Serial.println(statusError);
-      statusBle.notify("{\"v\":1,\"type\":\"error\",\"source\":\"device\",\"payload\":{\"code\":\"invalid_codex\"}}");
+      statusBle.notify("{\"v\":1,\"type\":\"error\",\"source\":\"device\",\"payload\":{\"code\":\"invalid_status\"}}");
       return;
     }
 
@@ -73,6 +92,16 @@ void handleBleMessage(const String &message) {
     Serial.print("% disk=");
     Serial.print(system.disk.usedPercent, 1);
     Serial.println("%");
+  }
+
+  if (strcmp(type, "codex.update") == 0) {
+    String statusError;
+    if (!codexUsage.updateFromCodexPayload(document["payload"], statusError)) {
+      Serial.print("codex.update rejected: ");
+      Serial.println(statusError);
+      statusBle.notify("{\"v\":1,\"type\":\"error\",\"source\":\"device\",\"payload\":{\"code\":\"invalid_codex\"}}");
+      return;
+    }
 
     const CodexUsageStatus &codex = codexUsage.current();
     if (!codex.available) {

@@ -2,16 +2,11 @@
 
 #include <cstring>
 
-bool CodexUsageStore::updateFromStatusPayload(JsonVariantConst payload,
-                                              String &error) {
-  // 缺少 codex 是旧桌面端的合法行为，不应导致整条 status.update 被拒绝。
-  if (!payload.containsKey("codex")) {
-    return true;
-  }
-
-  JsonObjectConst codex = payload["codex"].as<JsonObjectConst>();
+bool CodexUsageStore::updateFromCodexPayload(JsonVariantConst payload,
+                                             String &error) {
+  JsonObjectConst codex = payload.as<JsonObjectConst>();
   if (codex.isNull() || !codex["available"].is<bool>()) {
-    error = "missing or invalid payload.codex.available";
+    error = "missing or invalid codex.update payload.available";
     return false;
   }
 

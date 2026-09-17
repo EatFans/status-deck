@@ -8,7 +8,7 @@
  *
  * 状态卡设备端的内存状态容器。
  *
- * BLE 回调只负责把桌面端的 status.update 解析并写进这里；显示屏 UI 不需要
+ * BLE 回调只负责把桌面端的 system.update 解析并写进这里；显示屏 UI 不需要
  * 关心 JSON 或 BLE，之后只从 current() 读取变量并按当前页面渲染。
  *
  * 第一版仅存储系统信息：内存、磁盘和电源。后续可在 SystemStatus 同级扩展
@@ -64,14 +64,14 @@ struct SystemStatus {
 class DeviceStatusStore {
 public:
   /**
-   * 解析 status.update 的 payload 字段，并原子性地替换当前系统状态。
+   * 解析 system.update 的 payload 字段，并原子性地替换当前系统状态。
    *
    * payload 格式：
-   * {"system":{"memory":{...},"disk":{...},"power":{...}}}
+   * {"cpu":{...},"memory":{...},"disk":{...},"power":{...}}
    *
    * 返回 false 表示字段缺失或类型不对；旧状态会被保留，不会被半截数据污染。
    */
-  bool updateFromStatusPayload(JsonVariantConst payload, String &error);
+  bool updateFromSystemPayload(JsonVariantConst payload, String &error);
 
   /**
    * 返回当前完整状态。
