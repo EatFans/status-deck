@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"github.com/getlantern/systray"
 
@@ -129,13 +130,28 @@ func (a *App) handleBLEEvents(deviceStatus *systray.MenuItem) {
 			applog.Printf("BLE 连接尝试失败：%v", event.Err)
 		case ble.EventNotification:
 			a.lastSyncItem.SetTitle("设备响应：" + time.Now().Format("15:04:05"))
-			applog.Printf("BLE TX notify：%s", string(event.Message))
+			// 正常协议消息是 UTF-8 JSON。使用 %q 可把不可见字符明确转义；
+			// 若不是合法 UTF-8，同时记录 hex，便于排查 GATT 特征值或串口固件问题。
+			if utf8.Valid(event.Message) {
+				applog.Printf("BLE TX notify：bytes=%d text=%q", len(event.Message), string(event.Message))
+			} else {
+				applog.Printf("BLE TX notify 异常字节：bytes=%d hex=%x", len(event.Message), event.Message)
+			}
 		}
 	}
 }
 
 func (a *App) handleScan(deviceStatus *systray.MenuItem) {
 	for range a.scanItem.ClickedCh {
+		// 当前 MVP 只维护一台设备。ESP32 被连接后会停止广播，继续扫描既找不到
+		// 当前设备，也会让用户误以为连接失败，因此直接提示当前状态。
+		if a.client.IsConnected() {
+			a.statusItem.SetTitle("设备已连接")
+			deviceStatus.SetTitle("当前设备已连接")
+			applog.Println("跳过扫描：Status Deck 当前已连接")
+			continue
+		}
+
 		applog.Println("开始扫描 Status Deck 设备")
 
 		// 点击“扫描设备”后，临时禁用菜单项，避免重复扫描并发执行。
