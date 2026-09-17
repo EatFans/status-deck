@@ -1,0 +1,70 @@
+name: Package Desktop Apps
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package-macos:
+    if: github.ref == 'refs/heads/main'
+    name: Package macOS
+    runs-on: macos-latest
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: desktop/go.mod
+          cache-dependency-path: desktop/go.sum
+
+      - name: Test desktop code
+        working-directory: desktop
+        run: go test ./...
+
+      - name: Build macOS package
+        run: bash desktop/scripts/package-macos.sh
+
+      - name: Upload macOS package
+        uses: actions/upload-artifact@v7
+        with:
+          name: status-deck-macos
+          path: desktop/dist/Status-Deck-macos.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  package-windows:
+    if: github.ref == 'refs/heads/main'
+    name: Package Windows
+    runs-on: windows-latest
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: desktop/go.mod
+          cache-dependency-path: desktop/go.sum
+
+      - name: Test desktop code
+        working-directory: desktop
+        shell: pwsh
+        run: go test ./...
+
+      - name: Build Windows package
+        shell: pwsh
+        run: .\desktop\scripts\package-windows.ps1
+
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v7
+        with:
+          name: status-deck-windows
+          path: desktop/dist/Status-Deck-windows.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
