@@ -5,6 +5,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/shirou/gopsutil/v4/disk"
 	"github.com/shirou/gopsutil/v4/mem"
 )
@@ -20,6 +21,10 @@ type Collector struct {
 	// diskPath 指定要统计的磁盘挂载点。
 	// macOS/Linux 默认 "/"，Windows 默认 "C:\"。
 	diskPath string
+
+	// ioreg 的 GPU 查询比内存/磁盘查询更重，因此独立缓存，默认每 5 秒刷新一次。
+	lastGPU          GPU
+	lastGPUCollected time.Time
 }
 
 // NewCollector 创建默认系统信息采集器。
@@ -35,6 +40,11 @@ func NewCollector() *Collector {
 // 电源信息在某些平台不可用，所以 collectPower 会返回 Available=false，
 // 不把它当作整个采集流程的致命错误。
 func (c *Collector) Collect(ctx context.Context) (Snapshot, error) {
+	cpuUsage, err := collectCPU(ctx)
+	if err != nil {
+		return Snapshot{}, err
+	}
+
 	memory, err := collectMemory(ctx)
 	if err != nil {
 		return Snapshot{}, err
@@ -46,13 +56,39 @@ func (c *Collector) Collect(ctx context.Context) (Snapshot, error) {
 	}
 
 	power := collectPower(ctx)
+	gpu := c.collectGPU(ctx)
 
 	return Snapshot{
 		CollectedAt: time.Now(),
+		CPU:         cpuUsage,
+		GPU:         gpu,
 		Memory:      memory,
 		Disk:        diskUsage,
 		Power:       power,
 	}, nil
+}
+
+// collectCPU 读取所有逻辑核心合并后的使用率。interval=0 不会主动 sleep，
+// gopsutil 使用相邻两次读取的差值计算百分比，适合 2 秒的同步周期。
+func collectCPU(ctx context.Context) (CPU, error) {
+	percents, err := cpu.PercentWithContext(ctx, 0, false)
+	if err != nil {
+		return CPU{}, err
+	}
+	if len(percents) == 0 {
+		return CPU{}, nil
+	}
+	return CPU{UsagePercent: percents[0]}, nil
+}
+
+func (c *Collector) collectGPU(ctx context.Context) GPU {
+	if time.Since(c.lastGPUCollected) < 5*time.Second {
+		return c.lastGPU
+	}
+
+	c.lastGPU = collectGPU(ctx)
+	c.lastGPUCollected = time.Now()
+	return c.lastGPU
 }
 
 // collectMemory 采集物理内存使用情况。

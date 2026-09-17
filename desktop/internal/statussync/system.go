@@ -23,9 +23,35 @@ type Publisher interface {
 // 这里不直接序列化 systeminfo.Snapshot：CollectedAt 已由协议信封 ts 表达，
 // 避免每条 BLE 消息携带重复时间字段；系统名称也按项目约定不发送。
 type SystemPayload struct {
-	Memory systeminfo.Memory `json:"memory"`
-	Disk   systeminfo.Disk   `json:"disk"`
-	Power  systeminfo.Power  `json:"power"`
+	CPU    CPUWire           `json:"cpu"`
+	GPU    GPUWire           `json:"gpu"`
+	Memory CapacityWire      `json:"memory"`
+	Disk   CapacityWire      `json:"disk"`
+	Power  PowerWire         `json:"power"`
+}
+
+// CapacityWire 以 MB 传输容量。屏幕展示不需要 bytes 级精度，使用 MB 可以显著
+// 缩小 BLE 包；固件收到后会换算回 bytes 存入状态变量。
+type CapacityWire struct {
+	TotalMB     uint64  `json:"totalMB"`
+	UsedMB      uint64  `json:"usedMB"`
+	UsedPercent float64 `json:"usedPercent"`
+}
+
+type CPUWire struct {
+	UsagePercent float64 `json:"usagePercent"`
+}
+
+type GPUWire struct {
+	Available    bool    `json:"available"`
+	UsagePercent float64 `json:"usagePercent,omitempty"`
+}
+
+type PowerWire struct {
+	Available bool  `json:"available"`
+	Percent   *int  `json:"percent,omitempty"`
+	Charging  *bool `json:"charging,omitempty"`
+	OnBattery *bool `json:"onBattery,omitempty"`
 }
 
 type statusPayload struct {
@@ -87,9 +113,24 @@ func (s *SystemService) syncOnce(ctx context.Context) {
 
 	payload := statusPayload{
 		System: SystemPayload{
-			Memory: snapshot.Memory,
-			Disk:   snapshot.Disk,
-			Power:  snapshot.Power,
+			CPU: CPUWire{UsagePercent: roundPercent(snapshot.CPU.UsagePercent)},
+			GPU: GPUWire{Available: snapshot.GPU.Available, UsagePercent: roundPercent(snapshot.GPU.UsagePercent)},
+			Memory: CapacityWire{
+				TotalMB:     bytesToMB(snapshot.Memory.TotalBytes),
+				UsedMB:      bytesToMB(snapshot.Memory.UsedBytes),
+				UsedPercent: roundPercent(snapshot.Memory.UsedPercent),
+			},
+			Disk: CapacityWire{
+				TotalMB:     bytesToMB(snapshot.Disk.TotalBytes),
+				UsedMB:      bytesToMB(snapshot.Disk.UsedBytes),
+				UsedPercent: roundPercent(snapshot.Disk.UsedPercent),
+			},
+			Power: PowerWire{
+				Available: snapshot.Power.Available,
+				Percent:   snapshot.Power.Percent,
+				Charging:  snapshot.Power.Charging,
+				OnBattery: snapshot.Power.OnBattery,
+			},
 		},
 	}
 	if err := s.publisher.Send(ctx, "status.update", payload); err != nil {
@@ -97,8 +138,12 @@ func (s *SystemService) syncOnce(ctx context.Context) {
 		return
 	}
 
-	s.log("系统信息已推送：内存 %.1f%%，磁盘 %.1f%%", snapshot.Memory.UsedPercent, snapshot.Disk.UsedPercent)
+	s.log("系统信息已推送：CPU %.1f%%，GPU %.1f%%，内存 %.1f%%，磁盘 %.1f%%", snapshot.CPU.UsagePercent, snapshot.GPU.UsagePercent, snapshot.Memory.UsedPercent, snapshot.Disk.UsedPercent)
 }
+
+func bytesToMB(value uint64) uint64 { return value / (1024 * 1024) }
+
+func roundPercent(value float64) float64 { return float64(int(value*10+0.5)) / 10 }
 
 func (s *SystemService) log(format string, args ...any) {
 	if s.logf != nil {

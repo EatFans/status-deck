@@ -312,8 +312,11 @@ func (c *Client) discover(device bluetooth.Device, target Device) error {
 	return nil
 }
 
-// Write 通过 RX 特征值写入一条完整 JSON 消息。实时状态更新使用 Write Without
-// Response，避免每一条都等待 ATT 写响应；关键消息后续可在协议层增加 ACK 重传。
+// Write 通过 RX 特征值写入一条完整 JSON 消息。
+//
+// 状态卡当前每 2 秒会发送一次数百字节的完整快照。macOS 的
+// Write Without Response 有较小的在途缓冲上限，满后会阻塞心跳并导致设备误判
+// 离线；因此这里使用带响应写入，让蓝牙栈提供可靠背压。
 func (c *Client) Write(_ context.Context, payload []byte) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
@@ -324,7 +327,7 @@ func (c *Client) Write(_ context.Context, payload []byte) error {
 	if rx == nil || !c.IsConnected() {
 		return fmt.Errorf("Status Deck is not connected")
 	}
-	if _, err := rx.WriteWithoutResponse(payload); err != nil {
+	if _, err := rx.Write(payload); err != nil {
 		return fmt.Errorf("write RX characteristic: %w", err)
 	}
 	return nil

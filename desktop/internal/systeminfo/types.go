@@ -8,9 +8,26 @@ import "time"
 // 当前只服务状态卡展示需要的资源状态。
 type Snapshot struct {
 	CollectedAt time.Time `json:"collectedAt"`
+	CPU         CPU       `json:"cpu"`
+	GPU         GPU       `json:"gpu"`
 	Memory      Memory    `json:"memory"`
 	Disk        Disk      `json:"disk"`
 	Power       Power     `json:"power"`
+}
+
+// CPU 表示整机 CPU 的总使用率。
+type CPU struct {
+	UsagePercent float64 `json:"usagePercent"`
+}
+
+// GPU 表示当前主要 GPU 的使用率。
+//
+// GPU 指标没有跨平台的标准系统接口。第一版在 macOS Apple Silicon 上通过
+// IOAccelerator 读取；其他平台保留 Available=false，避免伪造为 0%。
+type GPU struct {
+	Available    bool    `json:"available"`
+	UsagePercent float64 `json:"usagePercent,omitempty"`
+	Source       string  `json:"source,omitempty"`
 }
 
 // Memory 表示内存使用情况。
