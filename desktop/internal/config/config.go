@@ -16,10 +16,6 @@ type Config struct {
 	// BLE 保存扫描、连接 Status Deck 硬件所需的设备名和 UUID。
 	BLE ble.Config
 
-	// SyncInterval 是向硬件同步状态数据的间隔。
-	// 当前仅旧 run 调试命令使用；状态栏应用使用下面按数据域配置的 SyncPlan。
-	SyncInterval time.Duration
-
 	// SyncPlan 为 CPU/GPU、内存、磁盘电源和 Codex 分别设置同步频率与最长静默时间。
 	// 后续设置页面可直接读写这些字段，而不需要修改同步器实现。
 	SyncPlan statussync.Plan
@@ -44,7 +40,6 @@ func Default() Config {
 			RXUUID:      ble.DefaultRXUUID,
 			TXUUID:      ble.DefaultTXUUID,
 		},
-		SyncInterval:      2 * time.Second,
 		SyncPlan:          statussync.DefaultPlan(),
 		ReconnectInterval: 5 * time.Second,
 		HeartbeatInterval: 10 * time.Second,

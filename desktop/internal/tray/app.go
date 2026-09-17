@@ -8,19 +8,15 @@ import (
 
 	"github.com/getlantern/systray"
 
+	desktopapp "status-deck/desktop/internal/app"
 	"status-deck/desktop/internal/applog"
 	"status-deck/desktop/internal/autostart"
 	"status-deck/desktop/internal/ble"
-	"status-deck/desktop/internal/codexusage"
 	"status-deck/desktop/internal/config"
-	"status-deck/desktop/internal/statussync"
-	"status-deck/desktop/internal/systeminfo"
 )
 
 type App struct {
-	config config.Config
-	client *ble.Client
-	syncer *statussync.SystemService
+	agent *desktopapp.Agent
 
 	// lifecycleCtx 在托盘退出时取消，自动重连与心跳 goroutine 随之停止。
 	lifecycleCtx    context.Context
@@ -37,11 +33,8 @@ type App struct {
 
 func NewApp(config config.Config) *App {
 	ctx, cancel := context.WithCancel(context.Background())
-	client := ble.NewClient(config.BLE)
 	return &App{
-		config:          config,
-		client:          client,
-		syncer:          statussync.NewSystemService(client, systeminfo.NewCollector(), codexusage.NewLocalProvider(), config.SyncPlan, applog.Printf),
+		agent:           desktopapp.New(config),
 		lifecycleCtx:    ctx,
 		cancelLifecycle: cancel,
 	}
@@ -97,11 +90,7 @@ func (a *App) onReady() {
 
 	// 应用一启动就开始主动寻找 Status Deck。ESP32 只负责广播，连接和断线重连
 	// 必须由电脑端这个 Central 发起；这里不需要用户手动点“扫描设备”。
-	a.client.Start(a.lifecycleCtx, a.config.ReconnectInterval, a.config.HeartbeatInterval)
-	// 集中同步服务在 BLE 已连接后，以 SyncPlan 为 CPU/GPU、内存、磁盘电源和
-	// Codex 分别调度采集与发送。后续数据源也应接入同步服务，使用自己的
-	// xxx.update 消息，而非直接竞争 BLE 写入。
-	a.syncer.Start(a.lifecycleCtx)
+	a.agent.Start(a.lifecycleCtx)
 
 	// systray 菜单点击通过 channel 通知。
 	// 每类交互放一个 goroutine，避免阻塞状态栏主循环。
@@ -115,7 +104,7 @@ func (a *App) onReady() {
 func (a *App) onExit() {
 	// 先取消后台维护循环，再主动断开 BLE，避免应用退出后继续扫描或写心跳。
 	a.cancelLifecycle()
-	_ = a.client.Close()
+	_ = a.agent.Close()
 	applog.Println("状态栏应用退出")
 	_ = applog.Close()
 }
@@ -123,7 +112,7 @@ func (a *App) onExit() {
 // handleBLEEvents 把 BLE 后台连接状态映射为状态栏文字，同时将设备的 notify
 // 写进应用日志。后续显示屏按键、ACK 和设备错误也都会从这里进入桌面端。
 func (a *App) handleBLEEvents(deviceStatus *systray.MenuItem) {
-	for event := range a.client.Events() {
+	for event := range a.agent.Events() {
 		switch event.Type {
 		case ble.EventConnecting:
 			a.statusItem.SetTitle("正在连接...")
@@ -138,7 +127,7 @@ func (a *App) handleBLEEvents(deviceStatus *systray.MenuItem) {
 			applog.Printf("BLE 已连接：name=%s id=%s", name, event.Device.ID)
 			// 不等待最慢的 30 秒任务。刚连上就补齐一份完整快照，后续由各任务的
 			// 变化检测和 MaxSilence 负责降低常态 BLE 写入频率。
-			a.syncer.SyncNow(a.lifecycleCtx)
+			a.agent.SyncNow(a.lifecycleCtx)
 		case ble.EventDisconnected:
 			a.statusItem.SetTitle("连接已断开，正在重连...")
 			applog.Printf("BLE 已断开：id=%s", event.Device.ID)
@@ -163,7 +152,7 @@ func (a *App) handleScan(deviceStatus *systray.MenuItem) {
 	for range a.scanItem.ClickedCh {
 		// 当前 MVP 只维护一台设备。ESP32 被连接后会停止广播，继续扫描既找不到
 		// 当前设备，也会让用户误以为连接失败，因此直接提示当前状态。
-		if a.client.IsConnected() {
+		if a.agent.IsConnected() {
 			a.statusItem.SetTitle("设备已连接")
 			deviceStatus.SetTitle("当前设备已连接")
 			applog.Println("跳过扫描：Status Deck 当前已连接")
@@ -177,7 +166,7 @@ func (a *App) handleScan(deviceStatus *systray.MenuItem) {
 		a.scanItem.Disable()
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		devices, err := a.client.ScanWithOptions(ctx, ble.ScanOptions{
+		devices, err := a.agent.ScanWithOptions(ctx, ble.ScanOptions{
 			Timeout: 10 * time.Second,
 		})
 		cancel()

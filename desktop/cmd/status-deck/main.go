@@ -9,10 +9,9 @@ import (
 	"syscall"
 	"time"
 
+	desktopapp "status-deck/desktop/internal/app"
 	"status-deck/desktop/internal/ble"
-	"status-deck/desktop/internal/collectors"
 	"status-deck/desktop/internal/config"
-	"status-deck/desktop/internal/protocol"
 	trayapp "status-deck/desktop/internal/tray"
 )
 
@@ -69,50 +68,34 @@ func printUsage() {
 }
 
 func run() error {
-	// run 是无界面的同步循环，主要用于调试 BLE 连接和数据发送。
-	// 后续状态栏应用内部也会复用类似的同步逻辑。
+	// run 是无界面的桌面 Agent，用于调试与自动化。它与托盘程序共用
+	// 相同的 BLE、系统信息和 Codex 同步链路，只是不创建状态栏菜单。
 	ctx, stop := signalContext()
 	defer stop()
 
 	cfg := config.Default()
-	client := ble.NewClient(cfg.BLE)
-	collector := collectors.NewSystemCollector()
+	agent := desktopapp.New(cfg)
+	defer agent.Close()
 
 	fmt.Printf("Starting Status Deck Desktop %s\n", version)
 	fmt.Printf("Target BLE service: %s\n", cfg.BLE.ServiceUUID)
 
-	if err := client.Connect(ctx); err != nil {
-		return err
-	}
-	defer client.Close()
-
-	ticker := time.NewTicker(cfg.SyncInterval)
-	defer ticker.Stop()
+	agent.Start(ctx)
 
 	for {
 		select {
 		case <-ctx.Done():
 			fmt.Println("Shutting down")
 			return nil
-		case <-ticker.C:
-			// 当前还是旧的占位采集器。新的内存/磁盘/电源采集模块在
-			// internal/systeminfo 中，暂时没有接入这里。
-			snapshot, err := collector.Collect(ctx)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "collect status: %v\n", err)
-				continue
-			}
-
-			payload := protocol.NewStatusPayload(snapshot)
-			data, err := protocol.Encode(payload)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "encode payload: %v\n", err)
-				continue
-			}
-
-			if err := client.Write(ctx, data); err != nil {
-				fmt.Fprintf(os.Stderr, "write BLE payload: %v\n", err)
-				continue
+		case event := <-agent.Events():
+			switch event.Type {
+			case ble.EventConnected:
+				fmt.Printf("Connected: %s\n", event.Device.Name)
+				agent.SyncNow(ctx)
+			case ble.EventDisconnected:
+				fmt.Println("Disconnected; reconnecting...")
+			case ble.EventConnectFailed:
+				fmt.Fprintf(os.Stderr, "connect failed: %v\n", event.Err)
 			}
 		}
 	}
@@ -135,8 +118,9 @@ func scan() error {
 	}
 
 	cfg := config.Default()
-	client := ble.NewClient(cfg.BLE)
-	devices, err := client.ScanWithOptions(ctx, ble.ScanOptions{
+	agent := desktopapp.New(cfg)
+	defer agent.Close()
+	devices, err := agent.ScanWithOptions(ctx, ble.ScanOptions{
 		Timeout:        *timeout,
 		IncludeAll:     *includeAll,
 		IncludeUnnamed: *includeUnnamed,

@@ -18,15 +18,15 @@ Status Deck Desktop 是运行在电脑上的轻量上位机程序。
 ```text
 desktop/
 ├── cmd/status-deck/           # CLI 入口
+├── internal/app/              # 无界面 Agent 编排，供 tray/run 共享
 ├── internal/ble/              # BLE 扫描、连接、写入和重连
-├── internal/collectors/       # 本机/API/服务器状态采集
 ├── internal/config/           # 配置加载
-├── internal/protocol/         # 发给硬件的数据结构
-├── internal/systeminfo/       # 独立系统信息采集
+├── internal/statussync/       # 按数据域调度采集与发送
+├── internal/systeminfo/       # CPU、内存、磁盘、电量、GPU 采集
 └── go.mod
 ```
 
-`internal/systeminfo/` 当前只负责采集内存、磁盘和电源信息，暂时没有接入状态栏显示或 BLE 发送链路。
+`internal/app/` 负责组装正式运行链路；状态栏模式和 `run` 调试模式都会使用它，避免维护两套采集和协议实现。
 
 ## 启动方式
 
@@ -46,7 +46,7 @@ status-deck scan --all --timeout 10s
 status-deck version
 ```
 
-当前 `scan` 已接入 `tinygo.org/x/bluetooth`，会扫描设备名或 Service UUID 匹配 Status Deck 的 BLE 设备。`run` 的连接、订阅和写入还在实现中。
+`scan` 会扫描设备名或 Service UUID 匹配 Status Deck 的 BLE 设备。`run` 会启动与状态栏模式一致的自动连接、系统状态和 Codex 用量同步流程，但不创建状态栏菜单。
 
 状态栏菜单里的“调试日志”会打开系统终端并实时跟踪应用日志。macOS 当前使用 Terminal + `tail -f`。
 
@@ -128,4 +128,4 @@ TX UUID:      7f3a0003-6c21-4b7d-9d5d-1f4f2b3a9000
 
 ## 开发状态
 
-当前是项目骨架，BLE 连接层还没有接入具体系统库。下一步会先验证 macOS/Windows 上的 Go BLE 能力，再决定是否使用 `tinygo.org/x/bluetooth` 或平台专用实现。
+当前桌面端已经具备状态栏运行、BLE 扫描与自动连接、系统状态与 Codex 用量同步、开机自启和跨平台打包能力。后续新增数据源应放入独立采集模块，再由 `internal/statussync/` 注册同步任务。
