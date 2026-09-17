@@ -1,29 +1,60 @@
 #include <Arduino.h>
+#include <ArduinoJson.h>
+#include <cstring>
+
+#include "DeviceStatusStore.h"
 #include "StatusBleServer.h"
 
 // 全局 BLE 服务对象。
 // 后续屏幕 UI、状态缓存、协议解析都可以围绕这个对象收发数据。
 StatusBleServer statusBle;
 
+// 设备端最新状态。未来屏幕 UI 直接读取 deviceStatus.current() 渲染，
+// 不需要知道 BLE 消息格式或重复解析 JSON。
+DeviceStatusStore deviceStatus;
+
 /**
  * 电脑端写入 BLE RX 特征值时会触发这个回调。
  *
- * 当前先做最简单的调试处理：
- * - 把收到的消息打印到串口
- * - 通过 TX 特征值回一个 {"ok":true}
- *
- * 后续可以在这里解析 JSON，并把数据写入屏幕 UI 状态，例如：
- * - AI 用量
- * - API 余额
- * - 服务器在线状态
- * - 本机 CPU / 内存 / 电量
+ * 当前支持 hello、heartbeat 和 status.update：
+ * - hello / heartbeat：确认通信链路仍正常
+ * - status.update：解析系统信息并写入 deviceStatus
  */
 void handleBleMessage(const String &message) {
   Serial.print("BLE RX: ");
   Serial.println(message);
 
-  // 给电脑端一个最小 ACK，方便桌面客户端确认 ESP32-S3 已收到数据。
-  // 后续接入 ArduinoJson 后，可从请求中提取 id 并填进 payload.ref。
+  // 文档规定的首版消息体不大。1024 bytes 足够容纳内存、磁盘和电源快照，
+  // 后续引入更大页面数据时，应按 docs/ble-protocol.md 的 chunk 机制分片。
+  StaticJsonDocument<1024> document;
+  DeserializationError jsonError = deserializeJson(document, message);
+  if (jsonError) {
+    Serial.print("BLE JSON parse failed: ");
+    Serial.println(jsonError.c_str());
+    statusBle.notify("{\"v\":1,\"type\":\"error\",\"source\":\"device\",\"payload\":{\"code\":\"invalid_json\"}}");
+    return;
+  }
+
+  const char *type = document["type"] | "";
+  if (strcmp(type, "status.update") == 0) {
+    String statusError;
+    if (!deviceStatus.updateFromStatusPayload(document["payload"], statusError)) {
+      Serial.print("status.update rejected: ");
+      Serial.println(statusError);
+      statusBle.notify("{\"v\":1,\"type\":\"error\",\"source\":\"device\",\"payload\":{\"code\":\"invalid_status\"}}");
+      return;
+    }
+
+    // 仅打印摘要，避免每 2 秒刷出完整 JSON。屏幕 UI 可通过 current() 读取详情。
+    const SystemStatus &system = deviceStatus.current();
+    Serial.print("System status stored: memory=");
+    Serial.print(system.memory.usedPercent, 1);
+    Serial.print("% disk=");
+    Serial.print(system.disk.usedPercent, 1);
+    Serial.println("%");
+  }
+
+  // 给电脑端 ACK。后续可以从 document["id"] 提取请求 ID，填入 payload.ref。
   statusBle.notify("{\"v\":1,\"type\":\"ack\",\"source\":\"device\",\"payload\":{\"ok\":true}}");
 }
 
