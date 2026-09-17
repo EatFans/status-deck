@@ -164,6 +164,43 @@ Status Deck
 }
 ```
 
+#### 当前系统信息载荷
+
+桌面端第一版实际发送的 `payload.system` 使用下列字段。容量统一为 bytes，
+百分比为 `0-100` 的小数；设备端会解析并存入内存变量，供当前或未来页面渲染。
+
+```json
+{
+  "system": {
+    "memory": {
+      "totalBytes": 34359738368,
+      "usedBytes": 12582912000,
+      "availableBytes": 21776826368,
+      "usedPercent": 36.6
+    },
+    "disk": {
+      "path": "/",
+      "totalBytes": 1000000000000,
+      "usedBytes": 420000000000,
+      "freeBytes": 580000000000,
+      "usedPercent": 42.0
+    },
+    "power": {
+      "available": true,
+      "percent": 86,
+      "charging": true,
+      "onBattery": false,
+      "state": "charging",
+      "source": "ac"
+    }
+  }
+}
+```
+
+`power.percent`、`charging` 与 `onBattery` 在没有电池的台式机上可以省略；
+`available` 仍会保留并为 `false`。今后增加 AI 用量、API 额度、服务器状态时，
+在 `payload` 下新增同级字段即可，不改变 `system` 的含义。
+
 通用状态值：
 
 | 值 | 含义 |
