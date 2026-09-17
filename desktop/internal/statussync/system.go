@@ -8,6 +8,7 @@ import (
 	"context"
 	"time"
 
+	"status-deck/desktop/internal/codexusage"
 	"status-deck/desktop/internal/systeminfo"
 )
 
@@ -56,27 +57,36 @@ type PowerWire struct {
 
 type statusPayload struct {
 	System SystemPayload `json:"system"`
+	Codex  codexusage.Snapshot `json:"codex"`
 }
 
 // SystemService 是集中同步服务的第一项实现。
 // 后续可在同一服务中加入 Usage、Services 等缓存，最终仍只经由 Publisher.Send 写 BLE。
 type SystemService struct {
-	publisher Publisher
-	collector *systeminfo.Collector
-	interval  time.Duration
-	logf      func(format string, args ...any)
+	publisher     Publisher
+	collector     *systeminfo.Collector
+	codexProvider codexusage.Provider
+	interval      time.Duration
+	logf          func(format string, args ...any)
 }
 
-// NewSystemService 创建系统信息同步服务。
-func NewSystemService(publisher Publisher, collector *systeminfo.Collector, interval time.Duration, logf func(string, ...any)) *SystemService {
+// NewSystemService 创建集中状态同步服务。
+//
+// collector 和 codexProvider 分别负责不同数据域；服务将它们合成一条
+// status.update，确保每次屏幕刷新看到的是同一时刻附近的完整状态快照。
+func NewSystemService(publisher Publisher, collector *systeminfo.Collector, codexProvider codexusage.Provider, interval time.Duration, logf func(string, ...any)) *SystemService {
 	if interval <= 0 {
 		interval = 2 * time.Second
 	}
+	if codexProvider == nil {
+		codexProvider = codexusage.UnavailableProvider{}
+	}
 	return &SystemService{
-		publisher: publisher,
-		collector: collector,
-		interval:  interval,
-		logf:      logf,
+		publisher:     publisher,
+		collector:     collector,
+		codexProvider: codexProvider,
+		interval:      interval,
+		logf:          logf,
 	}
 }
 
@@ -111,6 +121,15 @@ func (s *SystemService) syncOnce(ctx context.Context) {
 		return
 	}
 
+	// Codex 数据暂未接入真实来源时，UnavailableProvider 会返回 available=false。
+	// 即使未来的真实 Provider 某次采集失败，也仍发送“不可用”状态，避免设备端
+	// 长期展示已经过期的额度数字。
+	codexSnapshot, err := s.codexProvider.Collect(ctx)
+	if err != nil {
+		s.log("Codex 用量采集失败：%v", err)
+		codexSnapshot = codexusage.Snapshot{Available: false}
+	}
+
 	payload := statusPayload{
 		System: SystemPayload{
 			CPU: CPUWire{UsagePercent: roundPercent(snapshot.CPU.UsagePercent)},
@@ -132,13 +151,14 @@ func (s *SystemService) syncOnce(ctx context.Context) {
 				OnBattery: snapshot.Power.OnBattery,
 			},
 		},
+		Codex: codexSnapshot,
 	}
 	if err := s.publisher.Send(ctx, "status.update", payload); err != nil {
 		s.log("系统信息推送失败：%v", err)
 		return
 	}
 
-	s.log("系统信息已推送：CPU %.1f%%，GPU %.1f%%，内存 %.1f%%，磁盘 %.1f%%", snapshot.CPU.UsagePercent, snapshot.GPU.UsagePercent, snapshot.Memory.UsedPercent, snapshot.Disk.UsedPercent)
+	s.log("状态信息已推送：CPU %.1f%%，GPU %.1f%%，内存 %.1f%%，磁盘 %.1f%%，Codex=%t", snapshot.CPU.UsagePercent, snapshot.GPU.UsagePercent, snapshot.Memory.UsedPercent, snapshot.Disk.UsedPercent, codexSnapshot.Available)
 }
 
 func bytesToMB(value uint64) uint64 { return value / (1024 * 1024) }
