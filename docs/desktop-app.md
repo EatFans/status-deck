@@ -62,7 +62,7 @@ status-deck scan   # BLE 扫描调试
 
 后续可扩展：
 
-- 同步间隔
+- 各数据域同步间隔
 - 心跳间隔
 - 数据源开关
 - API Key 管理
@@ -79,6 +79,26 @@ status-deck scan   # BLE 扫描调试
 - 断开当前设备连接
 - 保存配置
 - 退出状态栏程序
+
+## 同步调度
+
+状态栏应用不使用一个全局的高频同步循环，而是为每个数据域独立配置任务。每个任务
+都有两个值：`Interval` 表示检查/采集频率，`MaxSilence` 表示内容不变时最多多久仍
+要重新发送一次。内容未变化时会跳过 BLE 写入。
+
+默认策略：
+
+| 数据域 | BLE 消息 | Interval | MaxSilence |
+| --- | --- | --- | --- |
+| CPU、GPU | `system.update` | 2 秒 | 10 秒 |
+| 内存 | `system.update` | 5 秒 | 30 秒 |
+| 磁盘、电源 | `system.update` | 30 秒 | 5 分钟 |
+| Codex 用量 | `codex.update` | 15 秒 | 1 分钟 |
+| 连接保活 | `heartbeat` | 10 秒 | - |
+
+默认值定义在 `desktop/internal/statussync.DefaultPlan()`，应用配置通过
+`config.Config.SyncPlan` 持有该计划。未来增加 API 额度或服务器状态时，应新增一个
+任务、一个 `xxx.update` 消息及设备端对应存储器，不与既有数据拼成总 payload。
 
 ## 技术方案
 

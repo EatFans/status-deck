@@ -6,3 +6,4 @@
 
 - [BLE 通信协议](./ble-protocol.md)
 - [桌面客户端设计](./desktop-app.md)
+- [数据同步调度指南](./sync-scheduling.md)
