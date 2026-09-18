@@ -18,7 +18,7 @@
 class StatusDisplay {
 public:
   StatusDisplay(uint8_t csPin, uint8_t dcPin, uint8_t resetPin,
-                int backlightPin);
+                int backlightPin, uint32_t spiFrequency);
 
   /**
    * 初始化 VSPI 与 ST7789。屏幕固定使用 240 x 320 纵向分辨率；返回 false 时
@@ -44,8 +44,8 @@ public:
 private:
   static constexpr uint16_t kWidth = 240;
   static constexpr uint16_t kHeight = 320;
-  // 彩屏信息量较大，单页保持 30 秒，给使用者足够时间阅读。
-  static constexpr uint32_t kPageDurationMs = 1000 * 30;
+  // 彩屏信息量较大，单页保持 60 秒；页面内数据仍可独立实时更新。
+  static constexpr uint32_t kPageDurationMs = 1000 * 60;
 
   void drawHeader(bool connected, bool desktopOnline);
   void drawBluetoothIcon(int16_t x, int16_t y, uint16_t color,
@@ -68,6 +68,7 @@ private:
   uint8_t dcPin_;
   uint8_t resetPin_;
   int backlightPin_;
+  uint32_t spiFrequency_;
   Adafruit_ST7789 display_;
   bool available_ = false;
   bool dirty_ = true;

@@ -14,9 +14,9 @@ constexpr uint16_t kRed = 0xF9E7;
 } // namespace
 
 StatusDisplay::StatusDisplay(uint8_t csPin, uint8_t dcPin, uint8_t resetPin,
-                             int backlightPin)
+                             int backlightPin, uint32_t spiFrequency)
     : csPin_(csPin), dcPin_(dcPin), resetPin_(resetPin),
-      backlightPin_(backlightPin),
+      backlightPin_(backlightPin), spiFrequency_(spiFrequency),
       display_(csPin, dcPin, resetPin) {}
 
 bool StatusDisplay::begin() {
@@ -30,13 +30,17 @@ bool StatusDisplay::begin() {
     digitalWrite(backlightPin_, HIGH);
   }
   display_.init(240, 320);
+  // Adafruit 驱动默认是 32MHz。ST7789 与经典 ESP32 的短线 SPI 连接可稳定跑在
+  // 40MHz，能缩短卡片和进度条的绘制时间；如出现花屏，可在 platformio.ini
+  // 将 STATUS_DECK_DISPLAY_SPI_FREQUENCY 改回 32000000。
+  display_.setSPISpeed(spiFrequency_);
   display_.setRotation(0);
   display_.fillScreen(kBackground);
   display_.setTextWrap(false);
   available_ = true;
-  Serial.printf(
-      "ST7789 ready: CS=%u DC=%u RESET=%u BL=%d, SPI SCK=18 MOSI=23\n",
-      csPin_, dcPin_, resetPin_, backlightPin_);
+  Serial.printf("ST7789 ready: CS=%u DC=%u RESET=%u BL=%d SPI=%luHz\n",
+                csPin_, dcPin_, resetPin_, backlightPin_,
+                static_cast<unsigned long>(spiFrequency_));
   return true;
 }
 
@@ -132,7 +136,7 @@ void StatusDisplay::drawSystemPage(const SystemStatus &system) {
     return;
   }
 
-  display_.setTextSize(1);
+  display_.setTextSize(2);
   display_.setTextColor(kTextPrimary);
   display_.setCursor(16, 46);
   display_.print(F("SYSTEM"));
