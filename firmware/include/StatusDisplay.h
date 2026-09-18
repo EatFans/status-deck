@@ -44,7 +44,8 @@ public:
 private:
   static constexpr uint16_t kWidth = 240;
   static constexpr uint16_t kHeight = 320;
-  static constexpr uint32_t kPageDurationMs = 4000;
+  // 彩屏信息量较大，单页保持 8 秒，给使用者足够时间阅读。
+  static constexpr uint32_t kPageDurationMs = 1000 * 30;
 
   void drawHeader(bool connected, bool desktopOnline);
   void drawBluetoothIcon(int16_t x, int16_t y, uint16_t color);
