@@ -25,6 +25,10 @@
 #define STATUS_DECK_DISPLAY_BACKLIGHT 25
 #endif
 
+#ifndef STATUS_DECK_DISPLAY_SPI_FREQUENCY
+#define STATUS_DECK_DISPLAY_SPI_FREQUENCY 40000000
+#endif
+
 #ifndef STATUS_DECK_ACTIVITY_LED_PIN
 #define STATUS_DECK_ACTIVITY_LED_PIN 2
 #endif
@@ -48,7 +52,8 @@ BleChunkAssembler chunkAssembler;
 // ST7789 彩色显示器。它只读取状态缓存，渲染逻辑不会进入 BLE 回调。
 StatusDisplay statusDisplay(STATUS_DECK_DISPLAY_CS, STATUS_DECK_DISPLAY_DC,
                             STATUS_DECK_DISPLAY_RESET,
-                            STATUS_DECK_DISPLAY_BACKLIGHT);
+                            STATUS_DECK_DISPLAY_BACKLIGHT,
+                            STATUS_DECK_DISPLAY_SPI_FREQUENCY);
 
 // 收到有效桌面端数据时短闪。若未来硬件改版未提供可用 LED，可将配置设为 -1 禁用。
 ActivityIndicator activityIndicator(STATUS_DECK_ACTIVITY_LED_PIN);
