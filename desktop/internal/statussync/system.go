@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"status-deck/desktop/internal/codexusage"
+	"status-deck/desktop/internal/pages"
 	"status-deck/desktop/internal/systeminfo"
 )
 
@@ -18,6 +19,7 @@ import (
 // ble.Client 满足该接口；保留接口能让本包在不依赖真实蓝牙硬件时单独测试。
 type Publisher interface {
 	IsConnected() bool
+	ActivePage() pages.Status
 	Send(ctx context.Context, messageType string, payload any) error
 }
 
@@ -37,18 +39,6 @@ type Plan struct {
 	Memory       TaskSchedule
 	StoragePower TaskSchedule
 	Codex        TaskSchedule
-}
-
-// DefaultPlan 返回兼顾桌面实时感、功耗和 BLE 稳定性的默认策略。
-func DefaultPlan() Plan {
-	return Plan{
-		Performance:  TaskSchedule{Interval: 2 * time.Second, MaxSilence: 10 * time.Second},
-		Memory:       TaskSchedule{Interval: 5 * time.Second, MaxSilence: 30 * time.Second},
-		StoragePower: TaskSchedule{Interval: 30 * time.Second, MaxSilence: 5 * time.Minute},
-		// Codex 额度来自本地会话记录，不需要像 CPU 一样高频刷新。设备首次连接时
-		// SyncNow 仍会立即推送；稳定连接期间则每 5 分钟检查并同步一次。
-		Codex: TaskSchedule{Interval: 5 * time.Minute, MaxSilence: 5 * time.Minute},
-	}
 }
 
 // SystemPayload 是 system.update 的局部 payload。各任务只填充自己负责的字段，
@@ -217,7 +207,7 @@ func (s *SystemService) runTask(ctx context.Context, task syncTask) {
 func (s *SystemService) syncPerformance(ctx context.Context, force bool) {
 	s.performanceMu.Lock()
 	defer s.performanceMu.Unlock()
-	if !s.publisher.IsConnected() {
+	if !s.publisher.IsConnected() || s.publisher.ActivePage().Index != pages.System {
 		return
 	}
 	performance, err := s.collector.CollectPerformance(ctx)
@@ -229,7 +219,7 @@ func (s *SystemService) syncPerformance(ctx context.Context, force bool) {
 		CPU: &CPUWire{UsagePercent: roundPercent(performance.CPU.UsagePercent)},
 		GPU: &GPUWire{Available: performance.GPU.Available, UsagePercent: roundPercent(performance.GPU.UsagePercent)},
 	}
-	if sent, err := s.publishIfDue(ctx, "performance", s.plan.Performance, "system.update", payload, force); err != nil {
+	if sent, err := s.publishIfDue(ctx, "performance", s.plan.Performance, "system.update", payload, pages.System, force); err != nil {
 		s.log("性能信息推送失败：%v", err)
 	} else if sent {
 		s.log("性能信息已推送：CPU %.1f%%，GPU %.1f%%", performance.CPU.UsagePercent, performance.GPU.UsagePercent)
@@ -239,7 +229,7 @@ func (s *SystemService) syncPerformance(ctx context.Context, force bool) {
 func (s *SystemService) syncMemory(ctx context.Context, force bool) {
 	s.memoryMu.Lock()
 	defer s.memoryMu.Unlock()
-	if !s.publisher.IsConnected() {
+	if !s.publisher.IsConnected() || s.publisher.ActivePage().Index != pages.System {
 		return
 	}
 	memory, err := s.collector.CollectMemory(ctx)
@@ -250,7 +240,7 @@ func (s *SystemService) syncMemory(ctx context.Context, force bool) {
 	payload := SystemPayload{Memory: &CapacityWire{
 		TotalMB: bytesToMB(memory.TotalBytes), UsedMB: bytesToMB(memory.UsedBytes), UsedPercent: roundPercent(memory.UsedPercent),
 	}}
-	if sent, err := s.publishIfDue(ctx, "memory", s.plan.Memory, "system.update", payload, force); err != nil {
+	if sent, err := s.publishIfDue(ctx, "memory", s.plan.Memory, "system.update", payload, pages.System, force); err != nil {
 		s.log("内存信息推送失败：%v", err)
 	} else if sent {
 		s.log("内存信息已推送：%.1f%%", memory.UsedPercent)
@@ -260,7 +250,7 @@ func (s *SystemService) syncMemory(ctx context.Context, force bool) {
 func (s *SystemService) syncStoragePower(ctx context.Context, force bool) {
 	s.storagePowerMu.Lock()
 	defer s.storagePowerMu.Unlock()
-	if !s.publisher.IsConnected() {
+	if !s.publisher.IsConnected() || s.publisher.ActivePage().Index != pages.System {
 		return
 	}
 	disk, err := s.collector.CollectDisk(ctx)
@@ -273,7 +263,7 @@ func (s *SystemService) syncStoragePower(ctx context.Context, force bool) {
 		Disk:  &CapacityWire{TotalMB: bytesToMB(disk.TotalBytes), UsedMB: bytesToMB(disk.UsedBytes), UsedPercent: roundPercent(disk.UsedPercent)},
 		Power: &PowerWire{Available: power.Available, Percent: power.Percent, Charging: power.Charging, OnBattery: power.OnBattery},
 	}
-	if sent, err := s.publishIfDue(ctx, "storage_power", s.plan.StoragePower, "system.update", payload, force); err != nil {
+	if sent, err := s.publishIfDue(ctx, "storage_power", s.plan.StoragePower, "system.update", payload, pages.System, force); err != nil {
 		s.log("磁盘和电源信息推送失败：%v", err)
 	} else if sent {
 		s.log("磁盘和电源信息已推送：磁盘 %.1f%%", disk.UsedPercent)
@@ -283,7 +273,7 @@ func (s *SystemService) syncStoragePower(ctx context.Context, force bool) {
 func (s *SystemService) syncCodex(ctx context.Context, force bool) {
 	s.codexMu.Lock()
 	defer s.codexMu.Unlock()
-	if !s.publisher.IsConnected() {
+	if !s.publisher.IsConnected() || s.publisher.ActivePage().Index != pages.Codex {
 		return
 	}
 	snapshot, err := s.codexProvider.Collect(ctx)
@@ -297,7 +287,7 @@ func (s *SystemService) syncCodex(ctx context.Context, force bool) {
 		s.log("Codex 用量采集已恢复")
 		s.lastCodexError = ""
 	}
-	if sent, err := s.publishIfDue(ctx, "codex", s.plan.Codex, "codex.update", snapshot, force); err != nil {
+	if sent, err := s.publishIfDue(ctx, "codex", s.plan.Codex, "codex.update", snapshot, pages.Codex, force); err != nil {
 		s.log("Codex 用量推送失败：%v", err)
 	} else if sent {
 		s.log("Codex 用量已推送：可用=%t", snapshot.Available)
@@ -307,7 +297,7 @@ func (s *SystemService) syncCodex(ctx context.Context, force bool) {
 // publishIfDue 通过序列化后的 payload 判断内容是否变化。这样无需为每种新模块
 // 手写比较器；MaxSilence 仍会确保长期静止的数据偶尔重新发送以修正连接恢复后的
 // 显示状态。
-func (s *SystemService) publishIfDue(ctx context.Context, key string, schedule TaskSchedule, messageType string, payload any, force bool) (bool, error) {
+func (s *SystemService) publishIfDue(ctx context.Context, key string, schedule TaskSchedule, messageType string, payload any, pageIndex int, force bool) (bool, error) {
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return false, err
@@ -322,6 +312,11 @@ func (s *SystemService) publishIfDue(ctx context.Context, key string, schedule T
 	due := force || !exists || !unchanged || now.Sub(previous.at) >= schedule.MaxSilence
 	s.stateMu.Unlock()
 	if !due {
+		return false, nil
+	}
+	// 采集期间用户可能已经切页。写入前再确认一次，确保不会把上一页的数据
+	// 发送给当前页面，避免 BLE 传输和屏幕刷新都做无用功。
+	if !s.publisher.IsConnected() || s.publisher.ActivePage().Index != pageIndex {
 		return false, nil
 	}
 

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"status-deck/desktop/internal/pages"
 	"tinygo.org/x/bluetooth"
 )
 
@@ -53,6 +54,7 @@ const (
 	EventConnected     EventType = "connected"
 	EventDisconnected  EventType = "disconnected"
 	EventNotification  EventType = "notification"
+	EventPageChanged   EventType = "page_changed"
 	EventConnectFailed EventType = "connect_failed"
 )
 
@@ -61,6 +63,7 @@ type Event struct {
 	Type    EventType
 	Device  Device
 	Message []byte
+	Page    pages.Status
 	Err     error
 }
 
@@ -84,6 +87,7 @@ type Client struct {
 	rx        *bluetooth.DeviceCharacteristic
 	tx        *bluetooth.DeviceCharacteristic
 	current   Device
+	page      pages.Status
 
 	events chan Event
 	closed chan struct{}
@@ -215,17 +219,20 @@ func (c *Client) Connect(ctx context.Context) error {
 		return err
 	}
 
+	// 先报告连接建立，确保随后 hello 触发的 page.status 在事件队列中排在其后。
+	// 否则快速设备可能先回 page.status，再被 EventConnected 的 UI 文案覆盖。
+	c.emit(Event{Type: EventConnected, Device: target})
+
 	// 协议规定：订阅通知后，桌面端先主动发送 hello，设备据此确认会话已经就绪。
 	if err := c.Write(ctx, newEnvelope("hello", map[string]any{
 		"client": "status-deck", "protocol": 1,
-		"features": []string{"json", "ack", "status", "heartbeat"},
+		"features": []string{"json", "ack", "status", "heartbeat", "pages"},
 	})); err != nil {
 		_ = device.Disconnect()
 		c.clearConnection(target, false)
 		return fmt.Errorf("send hello: %w", err)
 	}
 
-	c.emit(Event{Type: EventConnected, Device: target})
 	return nil
 }
 
@@ -310,6 +317,13 @@ func (c *Client) discover(device bluetooth.Device, target Device) error {
 	// EnableNotifications 会写入 CCCD；此后设备端调用 notify 时，桌面端会立刻收到。
 	if err := characteristics[1].EnableNotifications(func(message []byte) {
 		copyMessage := append([]byte(nil), message...)
+		if page, ok := parsePageStatus(copyMessage); ok {
+			c.mu.Lock()
+			c.page = page
+			c.mu.Unlock()
+			c.emit(Event{Type: EventPageChanged, Device: target, Page: page})
+			return
+		}
 		c.emit(Event{Type: EventNotification, Device: target, Message: copyMessage})
 	}); err != nil {
 		c.clearConnection(target, false)
@@ -452,6 +466,15 @@ func (c *Client) IsConnected() bool {
 	return err == nil && connected
 }
 
+// ActivePage returns the last page.status reported by the connected device.
+// A zero index means the connection is ready but the hello response has not
+// arrived yet, so callers must not send page-specific payloads.
+func (c *Client) ActivePage() pages.Status {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.page
+}
+
 func (c *Client) handleConnectionChange(device bluetooth.Device, connected bool) {
 	if connected {
 		return
@@ -479,6 +502,7 @@ func (c *Client) clearConnection(device Device, notify bool) {
 	c.rx = nil
 	c.tx = nil
 	c.current = Device{}
+	c.page = pages.Status{}
 	c.mu.Unlock()
 	if notify {
 		c.emit(Event{Type: EventDisconnected, Device: device})
@@ -509,6 +533,7 @@ func (c *Client) Close() error {
 	c.rx = nil
 	c.tx = nil
 	c.current = Device{}
+	c.page = pages.Status{}
 	c.mu.Unlock()
 	if device == nil {
 		return nil
@@ -516,6 +541,22 @@ func (c *Client) Close() error {
 	err := device.Disconnect()
 	c.emit(Event{Type: EventDisconnected, Device: current})
 	return err
+}
+
+func parsePageStatus(message []byte) (pages.Status, bool) {
+	var notification struct {
+		Type    string `json:"type"`
+		Payload struct {
+			Index int    `json:"index"`
+			ID    string `json:"id"`
+			Count int    `json:"count"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(message, &notification); err != nil || notification.Type != "page.status" {
+		return pages.Status{}, false
+	}
+	page := pages.Status{Index: notification.Payload.Index, ID: notification.Payload.ID, Count: notification.Payload.Count}
+	return page, page.Known() && page.Count >= page.Index
 }
 
 func newEnvelope(messageType string, payload any) []byte {

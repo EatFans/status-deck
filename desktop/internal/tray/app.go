@@ -26,6 +26,9 @@ type App struct {
 	statusItem   *systray.MenuItem
 	lastSyncItem *systray.MenuItem
 	scanItem     *systray.MenuItem
+	currentPage  *systray.MenuItem
+	previousPage *systray.MenuItem
+	nextPage     *systray.MenuItem
 	autoStart    *systray.MenuItem
 	debugLogs    *systray.MenuItem
 	quitItem     *systray.MenuItem
@@ -73,6 +76,12 @@ func (a *App) onReady() {
 	a.scanItem = deviceManager.AddSubMenuItem("扫描设备", "扫描附近的 Status Deck 设备")
 	deviceStatus := deviceManager.AddSubMenuItem("未选择设备", "当前选择的设备")
 	deviceStatus.Disable()
+	a.currentPage = deviceManager.AddSubMenuItem("当前页面：等待设备响应", "设备当前显示的页面")
+	a.currentPage.Disable()
+	a.previousPage = deviceManager.AddSubMenuItem("上一页", "切换设备到上一页")
+	a.previousPage.Disable()
+	a.nextPage = deviceManager.AddSubMenuItem("下一页", "切换设备到下一页")
+	a.nextPage.Disable()
 
 	// 设置菜单先放轻量选项。
 	settings := systray.AddMenuItem("设置", "打开 Status Deck 设置")
@@ -98,6 +107,7 @@ func (a *App) onReady() {
 	go a.handleAutoStart()
 	go a.handleDebugLogs()
 	go a.handleQuit()
+	go a.handlePageNavigation()
 	go a.handleBLEEvents(deviceStatus)
 }
 
@@ -125,11 +135,12 @@ func (a *App) handleBLEEvents(deviceStatus *systray.MenuItem) {
 			deviceStatus.SetTitle(fmt.Sprintf("%s RSSI=%d", name, event.Device.RSSI))
 			a.lastSyncItem.SetTitle("已建立实时连接")
 			applog.Printf("BLE 已连接：name=%s id=%s", name, event.Device.ID)
-			// 不等待最慢的 30 秒任务。刚连上就补齐一份完整快照，后续由各任务的
-			// 变化检测和 MaxSilence 负责降低常态 BLE 写入频率。
-			a.agent.SyncNow(a.lifecycleCtx)
+			a.currentPage.SetTitle("当前页面：正在读取")
 		case ble.EventDisconnected:
 			a.statusItem.SetTitle("连接已断开，正在重连...")
+			a.currentPage.SetTitle("当前页面：--")
+			a.previousPage.Disable()
+			a.nextPage.Disable()
 			applog.Printf("BLE 已断开：id=%s", event.Device.ID)
 		case ble.EventConnectFailed:
 			// 没开机或暂时不在附近是常态，因此 UI 保持安静，日志保留具体原因。
@@ -144,8 +155,44 @@ func (a *App) handleBLEEvents(deviceStatus *systray.MenuItem) {
 			} else {
 				applog.Printf("BLE TX notify 异常字节：bytes=%d hex=%x", len(event.Message), event.Message)
 			}
+		case ble.EventPageChanged:
+			a.currentPage.SetTitle(fmt.Sprintf("当前页面：%d %s", event.Page.Index, event.Page.Label()))
+			a.previousPage.Enable()
+			a.nextPage.Enable()
+			a.lastSyncItem.SetTitle("页面已切换：" + time.Now().Format("15:04:05"))
+			applog.Printf("设备页面：index=%d id=%s count=%d", event.Page.Index, event.Page.ID, event.Page.Count)
+			// 设备确认页面后再同步。同步器会只采集并发送此页所属的数据域。
+			a.agent.SyncNow(a.lifecycleCtx)
 		}
 	}
+}
+
+func (a *App) handlePageNavigation() {
+	for {
+		select {
+		case <-a.previousPage.ClickedCh:
+			a.requestPageChange("上一页", a.agent.PreviousPage)
+		case <-a.nextPage.ClickedCh:
+			a.requestPageChange("下一页", a.agent.NextPage)
+		}
+	}
+}
+
+func (a *App) requestPageChange(label string, command func(context.Context) error) {
+	a.previousPage.Disable()
+	a.nextPage.Disable()
+	ctx, cancel := context.WithTimeout(a.lifecycleCtx, 5*time.Second)
+	err := command(ctx)
+	cancel()
+	if err != nil {
+		applog.Printf("请求%s失败：%v", label, err)
+		if a.agent.IsConnected() {
+			a.previousPage.Enable()
+			a.nextPage.Enable()
+		}
+		return
+	}
+	applog.Printf("已请求设备切换%s，等待 page.status 确认", label)
 }
 
 func (a *App) handleScan(deviceStatus *systray.MenuItem) {

@@ -61,11 +61,24 @@ ActivityIndicator activityIndicator(STATUS_DECK_ACTIVITY_LED_PIN);
 /**
  * 电脑端写入 BLE RX 特征值时会触发这个回调。
  *
- * 当前支持 hello、heartbeat、system.update 和 codex.update：
+ * 当前支持 hello、heartbeat、system.update、codex.update 与页面控制命令：
  * - hello / heartbeat：确认通信链路仍正常
  * - system.update：解析系统信息并写入 deviceStatus
  * - codex.update：解析 Codex 用量并写入 codexUsage
+ * - page.previous / page.next：切换当前显示页并回传 page.status
  */
+void notifyPageStatus() {
+  char message[192];
+  snprintf(message, sizeof(message),
+           "{\"v\":1,\"type\":\"page.status\",\"source\":\"device\","
+           "\"target\":\"desktop\",\"payload\":{\"index\":%u,\"id\":\"%s\","
+           "\"count\":%u}}",
+           static_cast<unsigned int>(statusDisplay.currentPageIndex()),
+           statusDisplay.currentPageId(),
+           static_cast<unsigned int>(statusDisplay.pageCount()));
+  statusBle.notify(message);
+}
+
 void handleBleMessage(const String &message) {
   Serial.print("BLE RX: ");
   Serial.println(message);
@@ -102,6 +115,24 @@ void handleBleMessage(const String &message) {
     return;
   }
 
+  if (strcmp(type, "hello") == 0) {
+    // 页面由设备保存。每次连接建立后立即回传，桌面端据此显示当前页并只同步
+    // 此页所需的数据。
+    notifyPageStatus();
+  }
+
+  if (strcmp(type, "page.previous") == 0) {
+    if (statusDisplay.showPreviousPage()) {
+      notifyPageStatus();
+    }
+  }
+
+  if (strcmp(type, "page.next") == 0) {
+    if (statusDisplay.showNextPage()) {
+      notifyPageStatus();
+    }
+  }
+
   if (strcmp(type, "system.update") == 0) {
     String statusError;
     if (!deviceStatus.updateFromSystemPayload(document["payload"], statusError)) {
@@ -127,7 +158,7 @@ void handleBleMessage(const String &message) {
     Serial.print("% disk=");
     Serial.print(system.disk.usedPercent, 1);
     Serial.println("%");
-    statusDisplay.markDirty();
+    statusDisplay.markSystemDirty();
   }
 
   if (strcmp(type, "codex.update") == 0) {
@@ -152,7 +183,7 @@ void handleBleMessage(const String &message) {
       Serial.print("% reset=");
       Serial.println(codex.weekly.resetLabel);
     }
-    statusDisplay.markDirty();
+    statusDisplay.markCodexDirty();
   }
 
   // 只有数据完整且 JSON 合法时才闪烁，避免把损坏包误判为有效更新。

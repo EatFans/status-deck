@@ -59,11 +59,21 @@ func (a *Agent) Start(ctx context.Context) {
 	a.syncer.Start(ctx)
 }
 
-// SyncNow 在设备刚连接成功后立即补齐一份初始状态。
+// SyncNow 在设备确认当前页后立即补齐该页所需的初始状态。
 //
 // 定时任务本身仍会按照各自周期继续运行；状态同步服务会进行变化检测，避免这次
 // 立即同步与下一次定时同步产生无意义的重复 BLE 写入。
 func (a *Agent) SyncNow(ctx context.Context) { a.syncer.SyncNow(ctx) }
+
+// PreviousPage and NextPage ask the device to change its own current page.
+// The device confirms the resulting index through page.status.
+func (a *Agent) PreviousPage(ctx context.Context) error {
+	return a.client.Send(ctx, "page.previous", map[string]any{})
+}
+
+func (a *Agent) NextPage(ctx context.Context) error {
+	return a.client.Send(ctx, "page.next", map[string]any{})
+}
 
 // Events 向展示层暴露 BLE 生命周期事件和设备主动通知。
 //

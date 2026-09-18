@@ -9,15 +9,13 @@ import (
 
 // Config 是桌面端的总配置。
 //
-// 现在先用代码里的默认值，后续可以扩展为读取配置文件：
-// - macOS: ~/Library/Application Support/Status Deck/config.json
-// - Windows: %APPDATA%/Status Deck/config.json
+// 同步周期由 statussync/sync_config.go 统一定义，并在打包时编译进程序。
 type Config struct {
 	// BLE 保存扫描、连接 Status Deck 硬件所需的设备名和 UUID。
 	BLE ble.Config
 
 	// SyncPlan 为 CPU/GPU、内存、磁盘电源和 Codex 分别设置同步频率与最长静默时间。
-	// 后续设置页面可直接读写这些字段，而不需要修改同步器实现。
+	// 默认值来自编译期配置文件；此字段仍保留，供测试或未来明确的设置功能覆盖。
 	SyncPlan statussync.Plan
 
 	// ReconnectInterval 控制设备不可用时的重新扫描频率。

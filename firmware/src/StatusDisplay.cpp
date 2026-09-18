@@ -11,6 +11,14 @@ constexpr uint16_t kBlue = 0x55FF;
 constexpr uint16_t kGreen = 0x3ECA;
 constexpr uint16_t kOrange = 0xFD20;
 constexpr uint16_t kRed = 0xF9E7;
+
+struct PageDefinition {
+  uint8_t index;
+  const char *id;
+};
+
+constexpr PageDefinition kPages[] = {{1, "system"}, {2, "codex"}};
+constexpr uint8_t kPageCount = sizeof(kPages) / sizeof(kPages[0]);
 } // namespace
 
 StatusDisplay::StatusDisplay(uint8_t csPin, uint8_t dcPin, uint8_t resetPin,
@@ -29,7 +37,7 @@ bool StatusDisplay::begin() {
     pinMode(backlightPin_, OUTPUT);
     digitalWrite(backlightPin_, HIGH);
   }
-  display_.init(240, 320);
+  display_.init(kWidth, kHeight);
   // Adafruit 驱动默认是 32MHz。ST7789 与经典 ESP32 的短线 SPI 连接可稳定跑在
   // 40MHz，能缩短卡片和进度条的绘制时间；如出现花屏，可在 platformio.ini
   // 将 STATUS_DECK_DISPLAY_SPI_FREQUENCY 改回 32000000。
@@ -37,6 +45,20 @@ bool StatusDisplay::begin() {
   display_.setRotation(0);
   display_.fillScreen(kBackground);
   display_.setTextWrap(false);
+
+  frameBuffer_ = new GFXcanvas16(kWidth, kHeight);
+  if (frameBuffer_ != nullptr && frameBuffer_->getBuffer() != nullptr) {
+    frameBuffer_->setTextWrap(false);
+    frameBuffer_->fillScreen(kBackground);
+    doubleBuffered_ = true;
+    Serial.printf("ST7789 framebuffer ready: %lu bytes\n",
+                  static_cast<unsigned long>(kWidth) * kHeight *
+                      sizeof(uint16_t));
+  } else {
+    delete frameBuffer_;
+    frameBuffer_ = nullptr;
+    Serial.println("ST7789 framebuffer unavailable; rendering directly");
+  }
   available_ = true;
   Serial.printf("ST7789 ready: CS=%u DC=%u RESET=%u BL=%d SPI=%luHz\n",
                 csPin_, dcPin_, resetPin_, backlightPin_,
@@ -51,51 +73,53 @@ void StatusDisplay::render(const SystemStatus &system,
     return;
   }
 
-  const uint32_t now = millis();
   // 断线本身不会修改 SystemStatus 或 CodexUsageStatus，因此在这里单独观察连接
   // 状态。变化后强制重绘，让屏幕立即回到初始化页面，不展示已过期的旧数据。
-  if (!connectionKnown_ || connected != lastConnected_) {
+  const bool connectionChanged = !connectionKnown_ || connected != lastConnected_;
+  if (connectionChanged) {
     connectionKnown_ = true;
     lastConnected_ = connected;
     dirty_ = true;
   }
 
-  // 未连接时固定停留在初始化页，避免每 4 秒无意义地清屏一次。
-  const bool hasContent = system.valid || codex.available;
-  bool pageChanged = false;
-  if (connected && hasContent &&
-      static_cast<int32_t>(now - pageStartedAtMs_) >=
-          static_cast<int32_t>(kPageDurationMs)) {
-    systemPage_ = !systemPage_;
-    pageStartedAtMs_ = now;
-    pageChanged = true;
-  }
-
-  // 当数据从“等待”切换为“可显示”或反向变化时，需要清掉旧页面；同理，桌面端
-  // 在线状态变化也需要刷新顶部状态文字。除此以外，不进行整屏清除。
+  // 顶部连接状态、首帧和上位机发起的切页会影响整页布局。数据可用性只在其所在页面可见时
+  // 才需要重排，避免后台页面的数据更新打断当前页。
   const bool layoutChanged =
-      !frameKnown_ || pageChanged || lastDesktopOnline_ != desktopOnline ||
-      lastSystemValid_ != system.valid || lastCodexAvailable_ != codex.available;
-  if (!dirty_ && !layoutChanged) {
+      !frameKnown_ || dirty_ || connectionChanged ||
+      lastDesktopOnline_ != desktopOnline ||
+      (isSystemPage() && lastSystemValid_ != system.valid) ||
+      (!isSystemPage() && lastCodexAvailable_ != codex.available);
+  const bool currentPageDirty = isSystemPage() ? systemDirty_ : codexDirty_;
+  if (!layoutChanged && !currentPageDirty) {
     return;
   }
 
   if (layoutChanged) {
-    display_.fillScreen(kBackground);
+    graphics().fillScreen(kBackground);
     drawHeader(connected, desktopOnline);
     if (!connected) {
       drawInitializationPage();
-    } else if (systemPage_) {
+    } else if (isSystemPage()) {
       drawSystemPage(system);
     } else {
       drawCodexPage(codex);
     }
-  } else if (systemPage_) {
+    // 首帧、切页和连接状态变化会改变大量像素，整屏提交一次即可。
+    flushFrameBuffer();
+  } else if (isSystemPage()) {
     // 系统页的四张卡片本身使用不透明背景覆盖旧值，因此只重画这些卡片即可。
     drawSystemPage(system);
+    flushSystemMetrics();
   } else {
     // Codex 页仅擦除动态数值区域，保留标题、说明和顶部状态栏不动。
     drawCodexPage(codex);
+    flushCodexWindows();
+  }
+
+  if (isSystemPage()) {
+    systemDirty_ = false;
+  } else {
+    codexDirty_ = false;
   }
 
   frameKnown_ = true;
@@ -105,8 +129,103 @@ void StatusDisplay::render(const SystemStatus &system,
   dirty_ = false;
 }
 
+Adafruit_GFX &StatusDisplay::graphics() {
+  if (doubleBuffered_ && frameBuffer_ != nullptr) {
+    return static_cast<Adafruit_GFX &>(*frameBuffer_);
+  }
+  return static_cast<Adafruit_GFX &>(display_);
+}
+
+void StatusDisplay::flushFrameBuffer() {
+  if (!doubleBuffered_ || frameBuffer_ == nullptr) {
+    return;
+  }
+  display_.drawRGBBitmap(0, 0, frameBuffer_->getBuffer(), kWidth, kHeight);
+}
+
+void StatusDisplay::flushFrameBufferRect(int16_t x, int16_t y, int16_t width,
+                                         int16_t height) {
+  if (!doubleBuffered_ || frameBuffer_ == nullptr || width <= 0 ||
+      height <= 0) {
+    return;
+  }
+
+  // GFXcanvas16 的每行固定为 kWidth 像素宽。不能把其中一个局部区域直接交给
+  // drawRGBBitmap()，否则后续行会按 width 而非 kWidth 步进，造成图像错位。
+  // 保持一次 SPI 事务，并逐行送入带原始 stride 的画布数据。
+  display_.startWrite();
+  display_.setAddrWindow(x, y, width, height);
+  for (int16_t row = 0; row < height; ++row) {
+    uint16_t *pixels = frameBuffer_->getBuffer() + (y + row) * kWidth + x;
+    display_.writePixels(pixels, width);
+  }
+  display_.endWrite();
+}
+
+void StatusDisplay::flushSystemMetrics() {
+  // 每项指标独占 32 像素高的行。只提交这些行可将一次数据同步的 SPI 传输量
+  // 从整屏的 153,600 字节降到最多 76,800 字节，并缩短肉眼可见的撕裂时间。
+  constexpr int16_t kMetricRows[] = {70, 108, 146, 184, 222};
+  for (const int16_t y : kMetricRows) {
+    flushFrameBufferRect(0, y, kWidth, 32);
+  }
+}
+
+void StatusDisplay::flushCodexWindows() {
+  constexpr int16_t kCardX = 16;
+  constexpr int16_t kCardWidth = 208;
+  constexpr int16_t kCardHeight = 86;
+  flushFrameBufferRect(kCardX, 82, kCardWidth, kCardHeight);
+  flushFrameBufferRect(kCardX, 184, kCardWidth, kCardHeight);
+}
+
 void StatusDisplay::markDirty() {
   dirty_ = true;
+}
+
+void StatusDisplay::markSystemDirty() { systemDirty_ = true; }
+
+void StatusDisplay::markCodexDirty() { codexDirty_ = true; }
+
+bool StatusDisplay::showPreviousPage() {
+  for (uint8_t i = 0; i < kPageCount; ++i) {
+    if (kPages[i].index != currentPageIndex_) {
+      continue;
+    }
+    currentPageIndex_ = kPages[(i + kPageCount - 1) % kPageCount].index;
+    dirty_ = true;
+    return true;
+  }
+  return false;
+}
+
+bool StatusDisplay::showNextPage() {
+  for (uint8_t i = 0; i < kPageCount; ++i) {
+    if (kPages[i].index != currentPageIndex_) {
+      continue;
+    }
+    currentPageIndex_ = kPages[(i + 1) % kPageCount].index;
+    dirty_ = true;
+    return true;
+  }
+  return false;
+}
+
+uint8_t StatusDisplay::currentPageIndex() const { return currentPageIndex_; }
+
+const char *StatusDisplay::currentPageId() const {
+  for (const PageDefinition &page : kPages) {
+    if (page.index == currentPageIndex_) {
+      return page.id;
+    }
+  }
+  return "unknown";
+}
+
+uint8_t StatusDisplay::pageCount() const { return kPageCount; }
+
+bool StatusDisplay::isSystemPage() const {
+  return currentPageIndex_ == kSystemPageIndex;
 }
 
 bool StatusDisplay::available() const { return available_; }
@@ -115,12 +234,12 @@ void StatusDisplay::drawHeader(bool connected, bool desktopOnline) {
   // 顶部采用手机式紧凑状态栏：不再显示大标题，把空间留给实时指标。
   const uint16_t iconColor = connected ? kBlue : kTextMuted;
   drawBluetoothIcon(214, 6, iconColor, 16);
-  display_.fillRect(0, 29, kWidth, 1, kSurface);
+  graphics().fillRect(0, 29, kWidth, 1, kSurface);
 
-  display_.setTextSize(1);
-  display_.setTextColor(connected && desktopOnline ? kGreen : kTextMuted);
-  display_.setCursor(12, 10);
-  display_.print(connected ? (desktopOnline ? F("LIVE") : F("CONNECTED / IDLE"))
+  graphics().setTextSize(1);
+  graphics().setTextColor(connected && desktopOnline ? kGreen : kTextMuted);
+  graphics().setCursor(12, 10);
+  graphics().print(connected ? (desktopOnline ? F("LIVE") : F("CONNECTED / IDLE"))
                            : F("WAITING FOR BLE"));
 }
 
@@ -128,18 +247,18 @@ void StatusDisplay::drawSystemPage(const SystemStatus &system) {
   if (!system.valid) {
     // 蓝牙连接后直接进入系统页。初始同步尚未完成时，仅在页面内容区提示同步，
     // 不再显示“连接成功”的中间状态页。
-    display_.setTextSize(1);
-    display_.setTextColor(kTextPrimary);
-    display_.setCursor(16, 46);
-    display_.print(F("SYSTEM"));
+    graphics().setTextSize(1);
+    graphics().setTextColor(kTextPrimary);
+    graphics().setCursor(16, 46);
+    graphics().print(F("SYSTEM"));
     drawCenteredText(F("SYNCING METRICS"), 144, 1, kTextMuted);
     return;
   }
 
-  display_.setTextSize(2);
-  display_.setTextColor(kTextPrimary);
-  display_.setCursor(16, 46);
-  display_.print(F("SYSTEM"));
+  graphics().setTextSize(2);
+  graphics().setTextColor(kTextPrimary);
+  graphics().setCursor(16, 46);
+  graphics().print(F("SYSTEM"));
 
   // 系统页采用纵向进度条列表，保证 CPU、GPU、内存、磁盘、电源五项同时可见。
   drawMetricRow(F("CPU"), String(system.cpu.usedPercent, 0) + "%",
@@ -171,10 +290,10 @@ void StatusDisplay::drawSystemPage(const SystemStatus &system) {
 }
 
 void StatusDisplay::drawCodexPage(const CodexUsageStatus &codex) {
-  display_.setTextSize(2);
-  display_.setTextColor(kTextPrimary);
-  display_.setCursor(16, 46);
-  display_.print(F("CODEX"));
+  graphics().setTextSize(2);
+  graphics().setTextColor(kTextPrimary);
+  graphics().setCursor(16, 46);
+  graphics().print(F("CODEX"));
 
   if (!codex.available) {
     drawCenteredText(F("NO LOCAL USAGE DATA"), 130, 1, kTextMuted);
@@ -196,29 +315,29 @@ void StatusDisplay::drawCodexWindow(const __FlashStringHelper *label,
   constexpr int16_t kCardX = 16;
   constexpr int16_t kCardWidth = 208;
   constexpr int16_t kCardHeight = 86;
-  display_.fillRoundRect(kCardX, y, kCardWidth, kCardHeight, 8, kSurface);
+  graphics().fillRoundRect(kCardX, y, kCardWidth, kCardHeight, 8, kSurface);
 
-  display_.setTextSize(1);
-  display_.setTextColor(kTextMuted);
-  display_.setCursor(kCardX + 12, y + 12);
-  display_.print(label);
+  graphics().setTextSize(1);
+  graphics().setTextColor(kTextMuted);
+  graphics().setCursor(kCardX + 12, y + 12);
+  graphics().print(label);
 
   const String reset = formatResetLabel(resetLabel);
   const int16_t resetWidth = static_cast<int16_t>(reset.length()) * 6;
-  display_.setCursor(kCardX + kCardWidth - 12 - resetWidth, y + 12);
-  display_.print(reset);
+  graphics().setCursor(kCardX + kCardWidth - 12 - resetWidth, y + 12);
+  graphics().print(reset);
 
-  display_.setTextSize(4);
-  display_.setTextColor(color);
-  display_.setCursor(kCardX + 12, y + 30);
-  display_.print(remainingPercent, 0);
-  display_.setTextSize(2);
-  display_.print('%');
+  graphics().setTextSize(4);
+  graphics().setTextColor(color);
+  graphics().setCursor(kCardX + 12, y + 30);
+  graphics().print(remainingPercent, 0);
+  graphics().setTextSize(2);
+  graphics().print('%');
 
-  display_.setTextSize(1);
-  display_.setTextColor(kTextMuted);
-  display_.setCursor(kCardX + 112, y + 45);
-  display_.print(F("REMAINING"));
+  graphics().setTextSize(1);
+  graphics().setTextColor(kTextMuted);
+  graphics().setCursor(kCardX + 112, y + 45);
+  graphics().print(F("REMAINING"));
   drawUsageBar(kCardX + 12, y + 68, kCardWidth - 24, remainingPercent,
                color);
 }
@@ -237,11 +356,11 @@ void StatusDisplay::drawBluetoothIcon(int16_t x, int16_t y, uint16_t color,
   const int16_t leftX = x + height / 16;
   const int16_t upperY = y + height * 2 / 7;
   const int16_t lowerY = y + height * 5 / 7;
-  display_.drawLine(centerX, y, centerX, y + height, color);
-  display_.drawLine(centerX, y, rightX, upperY, color);
-  display_.drawLine(rightX, upperY, leftX, lowerY, color);
-  display_.drawLine(leftX, upperY, rightX, lowerY, color);
-  display_.drawLine(centerX, y + height, rightX, lowerY, color);
+  graphics().drawLine(centerX, y, centerX, y + height, color);
+  graphics().drawLine(centerX, y, rightX, upperY, color);
+  graphics().drawLine(rightX, upperY, leftX, lowerY, color);
+  graphics().drawLine(leftX, upperY, rightX, lowerY, color);
+  graphics().drawLine(centerX, y + height, rightX, lowerY, color);
 }
 
 void StatusDisplay::drawMetricRow(const __FlashStringHelper *label,
@@ -249,19 +368,19 @@ void StatusDisplay::drawMetricRow(const __FlashStringHelper *label,
                                   bool available, int16_t y,
                                   uint16_t color) {
   // 单行只有约 30 像素高，可在 240 x 320 屏幕中容纳五项核心开发指标。
-  display_.fillRect(0, y, kWidth, 32, kBackground);
-  display_.setTextSize(1);
-  display_.setTextColor(kTextMuted);
-  display_.setCursor(16, y);
-  display_.print(label);
+  graphics().fillRect(0, y, kWidth, 32, kBackground);
+  graphics().setTextSize(1);
+  graphics().setTextColor(kTextMuted);
+  graphics().setCursor(16, y);
+  graphics().print(label);
   const int16_t valueWidth = static_cast<int16_t>(value.length()) * 6;
-  display_.setTextColor(available ? color : kTextMuted);
-  display_.setCursor(224 - valueWidth, y);
-  display_.print(value);
+  graphics().setTextColor(available ? color : kTextMuted);
+  graphics().setCursor(224 - valueWidth, y);
+  graphics().print(value);
   if (available) {
     drawUsageBar(16, y + 15, 208, percent, color);
   } else {
-    display_.drawRoundRect(16, y + 15, 208, 7, 3, kSurface);
+    graphics().drawRoundRect(16, y + 15, 208, 7, 3, kSurface);
   }
 }
 
@@ -270,20 +389,20 @@ void StatusDisplay::drawUsageBar(int16_t x, int16_t y, int16_t width,
   constexpr int16_t kHeight = 7;
   const float clamped = constrain(percent, 0.0f, 100.0f);
   const int16_t fillWidth = static_cast<int16_t>((width - 2) * clamped / 100.0f);
-  display_.fillRoundRect(x, y, width, kHeight, 3, kBackground);
-  display_.drawRoundRect(x, y, width, kHeight, 3, kTextMuted);
+  graphics().fillRoundRect(x, y, width, kHeight, 3, kBackground);
+  graphics().drawRoundRect(x, y, width, kHeight, 3, kTextMuted);
   if (fillWidth > 0) {
-    display_.fillRoundRect(x + 1, y + 1, fillWidth, kHeight - 2, 2, color);
+    graphics().fillRoundRect(x + 1, y + 1, fillWidth, kHeight - 2, 2, color);
   }
 }
 
 void StatusDisplay::drawCenteredText(const String &text, int16_t y,
                                      uint8_t size, uint16_t color) {
-  display_.setTextSize(size);
-  display_.setTextColor(color);
+  graphics().setTextSize(size);
+  graphics().setTextColor(color);
   const int16_t width = static_cast<int16_t>(text.length()) * 6 * size;
-  display_.setCursor((kWidth - width) / 2, y);
-  display_.print(text);
+  graphics().setCursor((kWidth - width) / 2, y);
+  graphics().print(text);
 }
 
 String StatusDisplay::formatResetLabel(const String &rawLabel) const {
