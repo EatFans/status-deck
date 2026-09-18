@@ -2,14 +2,18 @@
 
 Status Deck 不会把 CPU、内存、磁盘、Codex 等所有数据拼成一条大消息后高频发送。
 桌面端会把它们拆成独立任务：每种数据按自己的节奏采集，只在数据变化或需要保活时
-写入 BLE。这样既能让 CPU/GPU 看起来实时，也能减少低频数据对蓝牙、ESP32 和电脑的
-无意义消耗。
+写入 BLE。连接后，设备先通知当前页面索引，桌面端只运行该页面所需的同步任务；切页
+确认后才采集并发送新页的数据。这样既能让 CPU/GPU 看起来实时，也能减少低频数据对
+蓝牙、ESP32 和电脑的无意义消耗。
 
-当前调度实现位于：
+同步周期的唯一配置位置是：
 
 ```text
-desktop/internal/statussync/system.go
+desktop/internal/statussync/sync_config.go
 ```
+
+这是编译期 Go 配置，不会读取用户目录中的 JSON。修改其中的 `Interval` 或
+`MaxSilence` 后重新打包，新的间隔会硬编码进桌面应用。
 
 ## 先理解两个参数
 
@@ -43,7 +47,7 @@ type TaskSchedule struct {
 
 ## 当前默认策略
 
-默认值由 `desktop/internal/statussync/system.go` 中的 `DefaultPlan()` 定义：
+默认值由 `desktop/internal/statussync/sync_config.go` 中的 `DefaultPlan()` 定义：
 
 ```go
 func DefaultPlan() Plan {
@@ -61,7 +65,7 @@ func DefaultPlan() Plan {
 | `Performance` | `cpu`、`gpu`，使用 `system.update` | 2 秒 | 10 秒 | 数值变化快，适合做实时仪表 |
 | `Memory` | `memory`，使用 `system.update` | 5 秒 | 30 秒 | 变化较慢，不需要高频查询 |
 | `StoragePower` | `disk`、`power`，使用 `system.update` | 30 秒 | 5 分钟 | 磁盘和供电通常变化很慢 |
-| `Codex` | `codex.update` | 15 秒 | 1 分钟 | 本地会话文件不需要每秒扫描 |
+| `Codex` | `codex.update` | 5 分钟 | 5 分钟 | 本地会话文件不需要高频扫描 |
 | 心跳 | `heartbeat` | 10 秒 | - | BLE 连接保活，由 BLE 客户端管理 |
 
 ## 自己修改频率
@@ -94,8 +98,9 @@ SyncPlan: statussync.DefaultPlan(),
 
 ## 连接时为什么会立即发送
 
-设备刚连上时，桌面端会调用 `SyncNow()`，依次补发性能、内存、磁盘/电源和 Codex
-的当前状态。这样设备不会因为磁盘任务的 30 秒周期而长时间空白。
+设备刚连上时会先等待设备回传 `page.status`，然后桌面端调用 `SyncNow()`，仅补发当前
+页的数据：System 页补发性能、内存、磁盘/电源，Codex 页只补发 Codex 用量。这样设备
+不会因为对应任务的周期而长时间空白，也不会把后台页面的数据写进 BLE。
 
 这次初始发送会记录为最近一次发送；紧接着的定时任务发现内容未变化时会自动跳过，
 不会因为“首次同步”和“定时同步”同时写两遍。

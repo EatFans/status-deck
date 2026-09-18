@@ -253,6 +253,47 @@ Codex 用量使用独立的 `codex.update.payload`。系统、Codex、API 和服
 今后增加 API 额度、服务器状态时，新增独立的 `api.update`、`server.update` 等
 消息类型及各自存储器，不改变 `system.update` 和 `codex.update` 的含义。
 
+### 页面控制
+
+页面索引由设备保存，当前页面目录为：
+
+| 索引 | ID | 数据消息 |
+| --- | --- | --- |
+| `1` | `system` | `system.update` |
+| `2` | `codex` | `codex.update` |
+
+桌面端连接后发送 `hello`，设备通过 TX notify 返回 `page.status`。桌面端仅采集和
+推送当前页对应的数据；收到 `page.status` 后再立即补发当前页的最新数据。新增页面时
+只需为其分配一个稳定索引、ID 和独立的 `*.update` 消息类型。
+
+```json
+{
+  "v": 1,
+  "type": "page.status",
+  "source": "device",
+  "target": "desktop",
+  "payload": {
+    "index": 1,
+    "id": "system",
+    "count": 2
+  }
+}
+```
+
+桌面端在已连接状态下可发送 `page.previous` 或 `page.next`。设备循环切换页面，并在
+完成切换后再次发送 `page.status`；电脑不应假设切换结果，而应以该通知为准。
+
+```json
+{
+  "v": 1,
+  "id": "desktop_123",
+  "type": "page.next",
+  "source": "desktop",
+  "target": "device",
+  "payload": {}
+}
+```
+
 通用状态值：
 
 | 值 | 含义 |

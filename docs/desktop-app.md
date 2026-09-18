@@ -96,7 +96,7 @@ status-deck scan   # BLE 扫描调试
 | Codex 用量 | `codex.update` | 15 秒 | 1 分钟 |
 | 连接保活 | `heartbeat` | 10 秒 | - |
 
-默认值定义在 `desktop/internal/statussync.DefaultPlan()`，应用配置通过
+默认值定义在 `desktop/internal/statussync/sync_config.go` 的 `DefaultPlan()`，应用配置通过
 `config.Config.SyncPlan` 持有该计划。未来增加 API 额度或服务器状态时，应新增一个
 任务、一个 `xxx.update` 消息及设备端对应存储器，不与既有数据拼成总 payload。
 
