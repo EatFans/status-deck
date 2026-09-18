@@ -156,7 +156,7 @@ func (a *App) handleBLEEvents(deviceStatus *systray.MenuItem) {
 				applog.Printf("BLE TX notify 异常字节：bytes=%d hex=%x", len(event.Message), event.Message)
 			}
 		case ble.EventPageChanged:
-			a.currentPage.SetTitle(fmt.Sprintf("当前页面：%d %s", event.Page.Index, event.Page.Label()))
+			a.currentPage.SetTitle(fmt.Sprintf("当前页面：%s", event.Page.Label()))
 			a.previousPage.Enable()
 			a.nextPage.Enable()
 			a.lastSyncItem.SetTitle("页面已切换：" + time.Now().Format("15:04:05"))

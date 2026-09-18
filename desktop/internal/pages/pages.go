@@ -24,9 +24,9 @@ func (s Status) Known() bool {
 func (s Status) Label() string {
 	switch s.Index {
 	case System:
-		return "System"
+		return "系统信息"
 	case Codex:
-		return "Codex"
+		return "Codex额度"
 	default:
 		return "未知页面"
 	}
