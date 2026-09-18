@@ -2,10 +2,32 @@
 #include <ArduinoJson.h>
 #include <cstring>
 
+#include "ActivityIndicator.h"
 #include "BleChunkAssembler.h"
 #include "CodexUsageStore.h"
 #include "DeviceStatusStore.h"
+#include "StatusDisplay.h"
 #include "StatusBleServer.h"
+
+#ifndef STATUS_DECK_DISPLAY_CS
+#define STATUS_DECK_DISPLAY_CS 5
+#endif
+
+#ifndef STATUS_DECK_DISPLAY_DC
+#define STATUS_DECK_DISPLAY_DC 27
+#endif
+
+#ifndef STATUS_DECK_DISPLAY_RESET
+#define STATUS_DECK_DISPLAY_RESET 26
+#endif
+
+#ifndef STATUS_DECK_DISPLAY_BACKLIGHT
+#define STATUS_DECK_DISPLAY_BACKLIGHT 25
+#endif
+
+#ifndef STATUS_DECK_ACTIVITY_LED_PIN
+#define STATUS_DECK_ACTIVITY_LED_PIN 2
+#endif
 
 // 全局 BLE 服务对象。
 // 后续屏幕 UI、状态缓存、协议解析都可以围绕这个对象收发数据。
@@ -22,6 +44,14 @@ CodexUsageStore codexUsage;
 // 大于单次 GATT 写入上限的桌面端消息会先在这里重组，再进入下面原有的 JSON
 // 解析和状态存储流程。显示层不需要知道 BLE 分片的存在。
 BleChunkAssembler chunkAssembler;
+
+// ST7789 彩色显示器。它只读取状态缓存，渲染逻辑不会进入 BLE 回调。
+StatusDisplay statusDisplay(STATUS_DECK_DISPLAY_CS, STATUS_DECK_DISPLAY_DC,
+                            STATUS_DECK_DISPLAY_RESET,
+                            STATUS_DECK_DISPLAY_BACKLIGHT);
+
+// 收到有效桌面端数据时短闪。若未来硬件改版未提供可用 LED，可将配置设为 -1 禁用。
+ActivityIndicator activityIndicator(STATUS_DECK_ACTIVITY_LED_PIN);
 
 /**
  * 电脑端写入 BLE RX 特征值时会触发这个回调。
@@ -92,6 +122,7 @@ void handleBleMessage(const String &message) {
     Serial.print("% disk=");
     Serial.print(system.disk.usedPercent, 1);
     Serial.println("%");
+    statusDisplay.markDirty();
   }
 
   if (strcmp(type, "codex.update") == 0) {
@@ -116,7 +147,12 @@ void handleBleMessage(const String &message) {
       Serial.print("% reset=");
       Serial.println(codex.weekly.resetLabel);
     }
+    statusDisplay.markDirty();
   }
+
+  // 只有数据完整且 JSON 合法时才闪烁，避免把损坏包误判为有效更新。
+  // hello、heartbeat 与业务更新都会提供一次轻量的链路活动反馈。
+  activityIndicator.pulse();
 
   // 给电脑端 ACK。后续可以从 document["id"] 提取请求 ID，填入 payload.ref。
   statusBle.notify("{\"v\":1,\"type\":\"ack\",\"source\":\"device\",\"payload\":{\"ok\":true}}");
@@ -131,6 +167,11 @@ void setup() {
 
   // 给 USB 串口一点初始化时间，避免刚启动时丢第一段日志。
   delay(200);
+
+  activityIndicator.begin();
+  if (statusDisplay.begin()) {
+    statusDisplay.markDirty();
+  }
 
   // 注册 BLE 消息回调。
   // 电脑端写 RX 特征值后，会进入 handleBleMessage()。
@@ -153,4 +194,7 @@ void loop() {
   // 维护 BLE 状态。当前主要用于断线后恢复广播。
   // 后续屏幕刷新、按键扫描、状态动画也会放在 loop() 或独立模块里。
   statusBle.loop();
+  activityIndicator.loop();
+  statusDisplay.render(deviceStatus.current(), codexUsage.current(),
+                       statusBle.isConnected(), statusBle.isDesktopOnline());
 }
