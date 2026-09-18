@@ -45,7 +45,9 @@ func DefaultPlan() Plan {
 		Performance:  TaskSchedule{Interval: 2 * time.Second, MaxSilence: 10 * time.Second},
 		Memory:       TaskSchedule{Interval: 5 * time.Second, MaxSilence: 30 * time.Second},
 		StoragePower: TaskSchedule{Interval: 30 * time.Second, MaxSilence: 5 * time.Minute},
-		Codex:        TaskSchedule{Interval: 15 * time.Second, MaxSilence: time.Minute},
+		// Codex 额度来自本地会话记录，不需要像 CPU 一样高频刷新。设备首次连接时
+		// SyncNow 仍会立即推送；稳定连接期间则每 5 分钟检查并同步一次。
+		Codex: TaskSchedule{Interval: 5 * time.Minute, MaxSilence: 5 * time.Minute},
 	}
 }
 
