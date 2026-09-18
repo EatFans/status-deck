@@ -44,21 +44,25 @@ public:
 private:
   static constexpr uint16_t kWidth = 240;
   static constexpr uint16_t kHeight = 320;
-  // 彩屏信息量较大，单页保持 8 秒，给使用者足够时间阅读。
+  // 彩屏信息量较大，单页保持 30 秒，给使用者足够时间阅读。
   static constexpr uint32_t kPageDurationMs = 1000 * 30;
 
   void drawHeader(bool connected, bool desktopOnline);
-  void drawBluetoothIcon(int16_t x, int16_t y, uint16_t color);
+  void drawBluetoothIcon(int16_t x, int16_t y, uint16_t color,
+                         uint8_t height);
   void drawSystemPage(const SystemStatus &system);
   void drawCodexPage(const CodexUsageStatus &codex);
+  void drawCodexWindow(const __FlashStringHelper *label, float remainingPercent,
+                       const String &resetLabel, int16_t y, uint16_t color);
   void drawInitializationPage();
-  void drawWaitingPage();
-  void drawMetricCard(const __FlashStringHelper *label, float percent,
-                      int16_t x, int16_t y, uint16_t color);
+  void drawMetricRow(const __FlashStringHelper *label, const String &value,
+                     float percent, bool available, int16_t y,
+                     uint16_t color);
   void drawUsageBar(int16_t x, int16_t y, int16_t width, float percent,
                     uint16_t color);
   void drawCenteredText(const String &text, int16_t y, uint8_t size,
                         uint16_t color);
+  String formatResetLabel(const String &rawLabel) const;
 
   uint8_t csPin_;
   uint8_t dcPin_;

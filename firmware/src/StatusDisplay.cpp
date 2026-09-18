@@ -81,8 +81,6 @@ void StatusDisplay::render(const SystemStatus &system,
     drawHeader(connected, desktopOnline);
     if (!connected) {
       drawInitializationPage();
-    } else if (!hasContent) {
-      drawWaitingPage();
     } else if (systemPage_) {
       drawSystemPage(system);
     } else {
@@ -110,146 +108,157 @@ void StatusDisplay::markDirty() {
 bool StatusDisplay::available() const { return available_; }
 
 void StatusDisplay::drawHeader(bool connected, bool desktopOnline) {
-  display_.setTextSize(2);
-  display_.setTextColor(kTextPrimary);
-  display_.setCursor(16, 18);
-  display_.print(F("STATUS DECK"));
-
+  // 顶部采用手机式紧凑状态栏：不再显示大标题，把空间留给实时指标。
   const uint16_t iconColor = connected ? kBlue : kTextMuted;
-  drawBluetoothIcon(204, 16, iconColor);
-  display_.fillRect(0, 52, kWidth, 2, kSurface);
+  drawBluetoothIcon(214, 6, iconColor, 16);
+  display_.fillRect(0, 29, kWidth, 1, kSurface);
 
   display_.setTextSize(1);
   display_.setTextColor(connected && desktopOnline ? kGreen : kTextMuted);
-  display_.setCursor(16, 62);
-  display_.print(connected ? (desktopOnline ? F("CONNECTED") : F("CONNECTED / IDLE"))
+  display_.setCursor(12, 10);
+  display_.print(connected ? (desktopOnline ? F("LIVE") : F("CONNECTED / IDLE"))
                            : F("WAITING FOR BLE"));
 }
 
 void StatusDisplay::drawSystemPage(const SystemStatus &system) {
   if (!system.valid) {
-    drawWaitingPage();
+    // 蓝牙连接后直接进入系统页。初始同步尚未完成时，仅在页面内容区提示同步，
+    // 不再显示“连接成功”的中间状态页。
+    display_.setTextSize(1);
+    display_.setTextColor(kTextPrimary);
+    display_.setCursor(16, 46);
+    display_.print(F("SYSTEM"));
+    drawCenteredText(F("SYNCING METRICS"), 144, 1, kTextMuted);
     return;
   }
 
-  display_.setTextSize(2);
+  display_.setTextSize(1);
   display_.setTextColor(kTextPrimary);
-  display_.setCursor(16, 90);
+  display_.setCursor(16, 46);
   display_.print(F("SYSTEM"));
 
-  drawMetricCard(F("CPU"), system.cpu.usedPercent, 16, 120, kBlue);
-  drawMetricCard(F("MEMORY"), system.memory.usedPercent, 128, 120, kGreen);
-  drawMetricCard(F("DISK"), system.disk.usedPercent, 16, 220, kOrange);
-
+  // 系统页采用纵向进度条列表，保证 CPU、GPU、内存、磁盘、电源五项同时可见。
+  drawMetricRow(F("CPU"), String(system.cpu.usedPercent, 0) + "%",
+                system.cpu.usedPercent, true, 70, kBlue);
+  drawMetricRow(F("GPU"),
+                system.gpu.available ? String(system.gpu.usedPercent, 0) + "%"
+                                     : String("--"),
+                system.gpu.usedPercent, system.gpu.available, 108, kGreen);
+  drawMetricRow(F("MEMORY"), String(system.memory.usedPercent, 0) + "%",
+                system.memory.usedPercent, true, 146, kGreen);
+  drawMetricRow(F("DISK"), String(system.disk.usedPercent, 0) + "%",
+                system.disk.usedPercent, true, 184, kOrange);
   const float powerPercent = system.power.available && system.power.hasPercent
                                  ? static_cast<float>(system.power.percent)
                                  : 0.0f;
-  drawMetricCard(F("POWER"), powerPercent, 128, 220,
-                 system.power.hasCharging && system.power.charging ? kGreen
-                                                                    : kTextMuted);
-
-  display_.setTextSize(1);
-  display_.setTextColor(kTextMuted);
-  // GPU 文本长度可能变化，例如 "GPU 100%" 变成 "GPU 9%"；先擦掉这一小块
-  // 区域，避免末尾残留字符，而不是清空整块屏幕。
-  display_.fillRect(0, 300, kWidth, 20, kBackground);
-  display_.setCursor(16, 304);
-  if (system.gpu.available) {
-    display_.print(F("GPU  "));
-    display_.print(system.gpu.usedPercent, 0);
-    display_.print('%');
-  } else {
-    display_.print(F("LIVE DESKTOP METRICS"));
+  String powerValue = "--";
+  if (system.power.available && system.power.hasPercent) {
+    powerValue = String(system.power.percent) + "%";
+    if (system.power.hasCharging && system.power.charging) {
+      powerValue += " CHG";
+    }
+  } else if (system.power.available) {
+    powerValue = "AC";
   }
+  drawMetricRow(F("POWER"), powerValue, powerPercent,
+                system.power.available && system.power.hasPercent, 222,
+                system.power.hasCharging && system.power.charging ? kGreen
+                                                                   : kTextMuted);
 }
 
 void StatusDisplay::drawCodexPage(const CodexUsageStatus &codex) {
   display_.setTextSize(2);
   display_.setTextColor(kTextPrimary);
-  display_.setCursor(16, 90);
-  display_.print(F("CODEX USAGE"));
+  display_.setCursor(16, 46);
+  display_.print(F("CODEX"));
 
   if (!codex.available) {
-    drawCenteredText(F("NO LOCAL USAGE DATA"), 160, 1, kTextMuted);
-    drawCenteredText(F("USE CODEX ONCE FIRST"), 180, 1, kTextMuted);
+    drawCenteredText(F("NO LOCAL USAGE DATA"), 130, 1, kTextMuted);
+    drawCenteredText(F("USE CODEX ONCE FIRST"), 150, 1, kTextMuted);
     return;
   }
 
-  // 只清除会随同步数据变化的两个区域。每次桌面端推送数据时不再产生全屏黑帧。
-  display_.fillRect(12, 144, 216, 82, kBackground);
-  display_.fillRect(12, 258, 216, 50, kBackground);
+  // 额度卡片本身会覆盖旧数值，因此数据同步时不需要整页清屏。
+  drawCodexWindow(F("5 HOUR"), codex.fiveHour.remainingPercent,
+                  codex.fiveHour.resetLabel, 82, kBlue);
+  drawCodexWindow(F("WEEKLY"), codex.weekly.remainingPercent,
+                  codex.weekly.resetLabel, 184, kGreen);
+}
+
+void StatusDisplay::drawCodexWindow(const __FlashStringHelper *label,
+                                    float remainingPercent,
+                                    const String &resetLabel, int16_t y,
+                                    uint16_t color) {
+  constexpr int16_t kCardX = 16;
+  constexpr int16_t kCardWidth = 208;
+  constexpr int16_t kCardHeight = 86;
+  display_.fillRoundRect(kCardX, y, kCardWidth, kCardHeight, 8, kSurface);
 
   display_.setTextSize(1);
   display_.setTextColor(kTextMuted);
-  display_.setCursor(16, 130);
-  display_.print(F("5 HOUR WINDOW"));
-  display_.setTextSize(5);
-  display_.setTextColor(kBlue);
-  display_.setCursor(16, 148);
-  display_.print(codex.fiveHour.remainingPercent, 0);
+  display_.setCursor(kCardX + 12, y + 12);
+  display_.print(label);
+
+  const String reset = formatResetLabel(resetLabel);
+  const int16_t resetWidth = static_cast<int16_t>(reset.length()) * 6;
+  display_.setCursor(kCardX + kCardWidth - 12 - resetWidth, y + 12);
+  display_.print(reset);
+
+  display_.setTextSize(4);
+  display_.setTextColor(color);
+  display_.setCursor(kCardX + 12, y + 30);
+  display_.print(remainingPercent, 0);
   display_.setTextSize(2);
   display_.print('%');
-  drawUsageBar(16, 202, 208, codex.fiveHour.remainingPercent, kBlue);
-  display_.setTextSize(1);
-  display_.setTextColor(kTextMuted);
-  display_.setCursor(16, 216);
-  display_.print(F("RESET "));
-  display_.print(codex.fiveHour.resetLabel);
 
-  display_.setCursor(16, 246);
-  display_.print(F("WEEKLY WINDOW"));
-  display_.setTextSize(3);
-  display_.setTextColor(kGreen);
-  display_.setCursor(16, 262);
-  display_.print(codex.weekly.remainingPercent, 0);
-  display_.setTextSize(1);
-  display_.print('%');
-  drawUsageBar(120, 272, 104, codex.weekly.remainingPercent, kGreen);
   display_.setTextSize(1);
   display_.setTextColor(kTextMuted);
-  display_.setCursor(16, 294);
-  display_.print(F("RESET "));
-  display_.print(codex.weekly.resetLabel);
+  display_.setCursor(kCardX + 112, y + 45);
+  display_.print(F("REMAINING"));
+  drawUsageBar(kCardX + 12, y + 68, kCardWidth - 24, remainingPercent,
+               color);
 }
 
 void StatusDisplay::drawInitializationPage() {
-  drawBluetoothIcon(104, 124, kBlue);
-  drawCenteredText(F("INITIALIZING"), 176, 2, kTextPrimary);
-  drawCenteredText(F("WAITING FOR DESKTOP AGENT"), 208, 1, kTextMuted);
-  drawCenteredText(F("STATUS DECK"), 274, 1, kTextMuted);
+  drawBluetoothIcon(104, 96, kBlue, 32);
+  drawCenteredText(F("INITIALIZING"), 148, 2, kTextPrimary);
+  drawCenteredText(F("WAITING FOR DESKTOP AGENT"), 180, 1, kTextMuted);
 }
 
-void StatusDisplay::drawWaitingPage() {
-  drawCenteredText(F("CONNECTED"), 166, 2, kTextPrimary);
-  drawCenteredText(F("WAITING FOR INITIAL DATA"), 198, 1, kTextMuted);
-}
-
-void StatusDisplay::drawBluetoothIcon(int16_t x, int16_t y, uint16_t color) {
+void StatusDisplay::drawBluetoothIcon(int16_t x, int16_t y, uint16_t color,
+                                      uint8_t height) {
   // 蓝牙标识用线条绘制，不依赖外部位图资源。
-  display_.drawLine(x + 8, y, x + 8, y + 28, color);
-  display_.drawLine(x + 8, y, x + 18, y + 8, color);
-  display_.drawLine(x + 18, y + 8, x + 2, y + 20, color);
-  display_.drawLine(x + 2, y + 8, x + 18, y + 20, color);
-  display_.drawLine(x + 8, y + 28, x + 18, y + 20, color);
+  const int16_t centerX = x + height / 4;
+  const int16_t rightX = x + height * 5 / 8;
+  const int16_t leftX = x + height / 16;
+  const int16_t upperY = y + height * 2 / 7;
+  const int16_t lowerY = y + height * 5 / 7;
+  display_.drawLine(centerX, y, centerX, y + height, color);
+  display_.drawLine(centerX, y, rightX, upperY, color);
+  display_.drawLine(rightX, upperY, leftX, lowerY, color);
+  display_.drawLine(leftX, upperY, rightX, lowerY, color);
+  display_.drawLine(centerX, y + height, rightX, lowerY, color);
 }
 
-void StatusDisplay::drawMetricCard(const __FlashStringHelper *label,
-                                   float percent, int16_t x, int16_t y,
-                                   uint16_t color) {
-  constexpr int16_t kCardWidth = 96;
-  constexpr int16_t kCardHeight = 82;
-  display_.fillRoundRect(x, y, kCardWidth, kCardHeight, 8, kSurface);
+void StatusDisplay::drawMetricRow(const __FlashStringHelper *label,
+                                  const String &value, float percent,
+                                  bool available, int16_t y,
+                                  uint16_t color) {
+  // 单行只有约 30 像素高，可在 240 x 320 屏幕中容纳五项核心开发指标。
+  display_.fillRect(0, y, kWidth, 32, kBackground);
   display_.setTextSize(1);
   display_.setTextColor(kTextMuted);
-  display_.setCursor(x + 10, y + 10);
+  display_.setCursor(16, y);
   display_.print(label);
-  display_.setTextSize(3);
-  display_.setTextColor(color);
-  display_.setCursor(x + 10, y + 30);
-  display_.print(percent, 0);
-  display_.setTextSize(1);
-  display_.print('%');
-  drawUsageBar(x + 10, y + 66, 76, percent, color);
+  const int16_t valueWidth = static_cast<int16_t>(value.length()) * 6;
+  display_.setTextColor(available ? color : kTextMuted);
+  display_.setCursor(224 - valueWidth, y);
+  display_.print(value);
+  if (available) {
+    drawUsageBar(16, y + 15, 208, percent, color);
+  } else {
+    display_.drawRoundRect(16, y + 15, 208, 7, 3, kSurface);
+  }
 }
 
 void StatusDisplay::drawUsageBar(int16_t x, int16_t y, int16_t width,
@@ -271,4 +280,37 @@ void StatusDisplay::drawCenteredText(const String &text, int16_t y,
   const int16_t width = static_cast<int16_t>(text.length()) * 6 * size;
   display_.setCursor((kWidth - width) / 2, y);
   display_.print(text);
+}
+
+String StatusDisplay::formatResetLabel(const String &rawLabel) const {
+  // 桌面端跨日期时会传入类似 "9月23日"。Adafruit 默认字库没有中文字形，
+  // 因此这里只提取数字并格式化成 09/23；当天的 HH:MM 则直接显示。
+  if (rawLabel.indexOf(':') >= 0) {
+    return String(F("TODAY ")) + rawLabel;
+  }
+
+  int values[2] = {0, 0};
+  uint8_t valueCount = 0;
+  int current = -1;
+  for (size_t index = 0; index < rawLabel.length(); ++index) {
+    const char character = rawLabel[index];
+    if (character >= '0' && character <= '9') {
+      current = current < 0 ? character - '0' : current * 10 + character - '0';
+      continue;
+    }
+    if (current >= 0 && valueCount < 2) {
+      values[valueCount++] = current;
+      current = -1;
+    }
+  }
+  if (current >= 0 && valueCount < 2) {
+    values[valueCount++] = current;
+  }
+  if (valueCount == 2) {
+    char formatted[16];
+    snprintf(formatted, sizeof(formatted), "RESET %02d/%02d", values[0],
+             values[1]);
+    return String(formatted);
+  }
+  return F("RESET --");
 }
