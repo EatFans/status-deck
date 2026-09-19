@@ -162,30 +162,29 @@ func (s *SystemService) Start(ctx context.Context) {
 	}
 }
 
-// SyncNow 在设备刚建立连接后补齐一份完整初始状态。
-//
-// 此方法会绕过“内容未变化则跳过”的常态去重策略：屏幕端在断线期间可能已经清空
-// 页面，重连后即使桌面端数据没有变化，也必须重新收到完整快照。四个数据域并行
-// 采集以缩短首屏等待时间；BLE 客户端自身会将实际写入串行化，保证 GATT 安全。
-//
-// 这不是额外的高频循环：初始同步完成后，各任务仍遵循自己的 Interval，随后的
-// 定时 tick 会恢复增量去重策略。
+// SyncNow 在设备确认当前页后立刻补齐该页的数据。它不会等待下一次定时 tick，也
+// 不会采集后台页的数据。发送仍会绕过常态去重，确保切页后总能拿到一份新快照。
 func (s *SystemService) SyncNow(ctx context.Context) {
+	page := s.publisher.ActivePage().Index
 	go func() {
-		var group sync.WaitGroup
-		for _, task := range []func(context.Context, bool){
-			s.syncPerformance,
-			s.syncMemory,
-			s.syncStoragePower,
-			s.syncCodex,
-		} {
-			group.Add(1)
-			go func(task func(context.Context, bool)) {
-				defer group.Done()
-				task(ctx, true)
-			}(task)
+		switch page {
+		case pages.System:
+			var group sync.WaitGroup
+			for _, task := range []func(context.Context, bool){
+				s.syncPerformance,
+				s.syncMemory,
+				s.syncStoragePower,
+			} {
+				group.Add(1)
+				go func(task func(context.Context, bool)) {
+					defer group.Done()
+					task(ctx, true)
+				}(task)
+			}
+			group.Wait()
+		case pages.Codex:
+			s.syncCodex(ctx, true)
 		}
-		group.Wait()
 	}()
 }
 

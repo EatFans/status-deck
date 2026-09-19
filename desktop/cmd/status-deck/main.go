@@ -91,6 +91,8 @@ func run() error {
 			switch event.Type {
 			case ble.EventConnected:
 				fmt.Printf("Connected: %s\n", event.Device.Name)
+			case ble.EventPageChanged:
+				fmt.Printf("Active page: %s\n", event.Page.Label())
 				agent.SyncNow(ctx)
 			case ble.EventDisconnected:
 				fmt.Println("Disconnected; reconnecting...")
