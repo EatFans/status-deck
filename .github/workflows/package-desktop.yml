@@ -9,8 +9,20 @@ permissions:
 jobs:
   package-macos:
     if: github.ref == 'refs/heads/main'
-    name: Package macOS
-    runs-on: macos-latest
+    name: Package macOS (${{ matrix.label }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Apple Silicon
+            runner: macos-latest
+            goarch: arm64
+            artifact: status-deck-macos-arm64
+          - label: Intel
+            runner: macos-15-intel
+            goarch: amd64
+            artifact: status-deck-macos-amd64
     steps:
       - name: Check out main
         uses: actions/checkout@v7
@@ -26,20 +38,20 @@ jobs:
         run: go test ./...
 
       - name: Build macOS package
-        run: bash desktop/scripts/package-macos.sh
+        run: bash desktop/scripts/package-macos.sh ${{ matrix.goarch }}
 
       - name: Upload macOS package
         uses: actions/upload-artifact@v7
         with:
-          name: status-deck-macos
-          path: desktop/dist/Status-Deck-macos.zip
+          name: ${{ matrix.artifact }}
+          path: desktop/dist/Status-Deck-macos-${{ matrix.goarch }}.zip
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
 
   package-windows:
     if: github.ref == 'refs/heads/main'
-    name: Package Windows
+    name: Package Windows (x64)
     runs-on: windows-latest
     steps:
       - name: Check out main
