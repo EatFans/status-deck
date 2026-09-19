@@ -55,7 +55,7 @@ func DefaultPlan() Plan {
         Performance:  TaskSchedule{Interval: 2 * time.Second, MaxSilence: 10 * time.Second},
         Memory:       TaskSchedule{Interval: 5 * time.Second, MaxSilence: 30 * time.Second},
         StoragePower: TaskSchedule{Interval: 30 * time.Second, MaxSilence: 5 * time.Minute},
-        Codex:        TaskSchedule{Interval: 15 * time.Second, MaxSilence: time.Minute},
+        Codex:        TaskSchedule{Interval: 5 * time.Second, MaxSilence: time.Minute},
     }
 }
 ```
@@ -65,7 +65,7 @@ func DefaultPlan() Plan {
 | `Performance` | `cpu`、`gpu`，使用 `system.update` | 2 秒 | 10 秒 | 数值变化快，适合做实时仪表 |
 | `Memory` | `memory`，使用 `system.update` | 5 秒 | 30 秒 | 变化较慢，不需要高频查询 |
 | `StoragePower` | `disk`、`power`，使用 `system.update` | 30 秒 | 5 分钟 | 磁盘和供电通常变化很慢 |
-| `Codex` | `codex.update` | 5 分钟 | 5 分钟 | 本地会话文件不需要高频扫描 |
+| `Codex` | `codex.update` | 5 秒（仅 Codex 页） | 1 分钟 | 切页后可迅速识别本地额度快照恢复 |
 | 心跳 | `heartbeat` | 10 秒 | - | BLE 连接保活，由 BLE 客户端管理 |
 
 ## 自己修改频率

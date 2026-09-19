@@ -28,7 +28,10 @@ func DefaultPlan() Plan {
 			MaxSilence: 5 * time.Minute,
 		},
 		Codex: TaskSchedule{
-			Interval:   1 * time.Minute,
+			// 切到 Codex 页后，若本地会话刚跨过额度重置点，下一条有效快照可能
+			// 稍后才写入。五秒检查可让恢复后的数据几乎立刻显示；同步器只在
+			// Codex 页可见时运行此任务，且未变化时不会重复发送 BLE。
+			Interval:   5 * time.Second,
 			MaxSilence: 1 * time.Minute,
 		},
 	}
