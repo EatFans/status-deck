@@ -1,4 +1,4 @@
-#include "DeviceStatusStore.h"
+#include "status/DeviceStatusStore.h"
 
 #include <cstring>
 

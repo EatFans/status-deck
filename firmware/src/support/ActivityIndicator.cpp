@@ -1,4 +1,4 @@
-#include "ActivityIndicator.h"
+#include "support/ActivityIndicator.h"
 
 ActivityIndicator::ActivityIndicator(int pin, bool activeHigh)
     : pin_(pin), activeHigh_(activeHigh) {}
