@@ -2,6 +2,14 @@
 
 #include <SPI.h>
 
+#ifndef STATUS_DECK_DISPLAY_SCK
+#define STATUS_DECK_DISPLAY_SCK 18
+#endif
+
+#ifndef STATUS_DECK_DISPLAY_MOSI
+#define STATUS_DECK_DISPLAY_MOSI 17
+#endif
+
 namespace {
 constexpr uint16_t kBackground = ST77XX_BLACK;
 constexpr uint16_t kSurface = 0x18E3;
@@ -28,9 +36,9 @@ StatusDisplay::StatusDisplay(uint8_t csPin, uint8_t dcPin, uint8_t resetPin,
       display_(csPin, dcPin, resetPin) {}
 
 bool StatusDisplay::begin() {
-  // VSPI 使用经典 ESP32 的硬件默认引脚：SCK=18、MISO=19、MOSI=23。
-  // 当前屏幕不读取 MISO，仍传入它以保留硬件 SPI 总线的标准配置。
-  SPI.begin(18, 19, 23, csPin_);
+  // ESP32-S3 使用自定义 SPI 引脚。屏幕只写不读，MISO 保持
+  // 未连接，避免占用 S3 原生 USB 常用的 GPIO19。
+  SPI.begin(STATUS_DECK_DISPLAY_SCK, -1, STATUS_DECK_DISPLAY_MOSI, csPin_);
   // 这块转接板的 LED 是背光控制输入，而不是背光电源正极。GPIO25 输出高电平
   // 即可打开板载三极管，不需要与 VCC 共用 ESP32 唯一的 3V3 针脚。
   if (backlightPin_ >= 0) {
@@ -38,7 +46,7 @@ bool StatusDisplay::begin() {
     digitalWrite(backlightPin_, HIGH);
   }
   display_.init(kWidth, kHeight);
-  // Adafruit 驱动默认是 32MHz。ST7789 与经典 ESP32 的短线 SPI 连接可稳定跑在
+  // Adafruit 驱动默认是 32MHz。ST7789 与 ESP32-S3 的短线 SPI 连接可稳定跑在
   // 40MHz，能缩短卡片和进度条的绘制时间；如出现花屏，可在 platformio.ini
   // 将 STATUS_DECK_DISPLAY_SPI_FREQUENCY 改回 32000000。
   display_.setSPISpeed(spiFrequency_);

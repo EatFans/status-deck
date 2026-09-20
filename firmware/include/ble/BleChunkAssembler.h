@@ -8,7 +8,7 @@
  *
  * 重组桌面端发送的 type=chunk 消息。
  *
- * 经典 ESP32 与 macOS 的单次 GATT 写入长度有限。system.update、codex.update 等
+ * ESP32-S3 与 macOS 的单次 GATT 写入长度有限。system.update、codex.update 等
  * 独立模块消息通常足够短；某个单独模块未来变大时，桌面端会将原始 JSON 按顺序
  * 拆成多个 chunk。本类校验 ref、index、total 和总长度，只在收齐最后一块时返回
  * 完整原始 JSON。

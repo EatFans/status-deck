@@ -21,7 +21,7 @@ public:
                 int backlightPin, uint32_t spiFrequency);
 
   /**
-   * 初始化 VSPI 与 ST7789。屏幕固定使用 240 x 320 纵向分辨率；返回 false 时
+   * 初始化 ESP32-S3 SPI 与 ST7789。屏幕固定使用 240 x 320 纵向分辨率；返回 false 时
    * 固件仍继续运行，只是不渲染屏幕，便于单独排查接线。
    */
   bool begin();

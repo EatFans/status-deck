@@ -87,7 +87,7 @@ void StatusBleServer::begin(const Config &config) {
       NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
 
   // 初始值主要用于调试：电脑端连接后读取 TX，可以看到设备已准备好。
-  // 不使用 setValue("...") 的泛型重载。经典 ESP32 上它可能把字符串指针本身
+  // 不使用 setValue("...") 的泛型重载。部分 NimBLE 版本会把字符串指针本身
   // 当成 4 字节数据保存，而不是保存字符串内容。
   const char readyMessage[] = "ready";
   txCharacteristic_->setValue(
