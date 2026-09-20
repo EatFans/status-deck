@@ -16,11 +16,11 @@ import "time"
 func DefaultPlan() Plan {
 	return Plan{
 		Performance: TaskSchedule{
-			Interval:   2 * time.Second,
+			Interval:   1 * time.Second,
 			MaxSilence: 10 * time.Second,
 		},
 		Memory: TaskSchedule{
-			Interval:   5 * time.Second,
+			Interval:   1 * time.Second,
 			MaxSilence: 30 * time.Second,
 		},
 		StoragePower: TaskSchedule{
