@@ -16,10 +16,11 @@ import (
 )
 
 const (
-	maxSessionFiles   = 80
-	tailChunkBytes    = int64(1 << 20)
-	defaultCacheTTL   = 5 * time.Second
-	maxJSONLLineBytes = 2 << 20
+	maxSessionFiles    = 80
+	tailChunkBytes     = int64(1 << 20)
+	defaultCacheTTL    = 5 * time.Second
+	maxJSONLLineBytes  = 2 << 20
+	cacheSchemaVersion = 1
 )
 
 // LocalProvider 从 Codex CLI 已写入本机的会话事件中读取用量。
@@ -29,24 +30,50 @@ const (
 // 本实现只读这些本地文件：不读取 auth.json、不使用 access token，也不会发起
 // 任何网络请求。
 //
-// 本地数据只会在 Codex 自身有新活动时更新。某个窗口已到重置时间、但本地没有
-// 更新后的事件时，Provider 会返回不可用，避免把已跨重置周期的旧数字当成实时值。
+// 本地数据只会在 Codex 自身有新活动时更新。每次成功读取都会将最后一次可信额度
+// 写入系统缓存目录；之后即使会话文件暂时读不到（例如额度耗尽后没有新的终端输出），
+// 只要尚未跨过该额度窗口的重置时间，仍会返回缓存中的值。这样 0% 是有效状态，
+// 不会被错误地显示成“暂无本地数据”。
+//
+// 一旦缓存跨过任一窗口的重置时间，就不再使用旧数值：新周期的实际额度无法从旧事件
+// 推断，必须等 Codex 产生新的 rate_limits 事件后才恢复显示。
 type LocalProvider struct {
-	cacheTTL time.Duration
-	now      func() time.Time
+	cacheTTL  time.Duration
+	now       func() time.Time
+	cachePath string
 
-	mu          sync.Mutex
-	lastFetched time.Time
-	cached      Snapshot
-	cachedErr   error
+	mu              sync.Mutex
+	lastFetched     time.Time
+	cached          Snapshot
+	cachedErr       error
+	lastKnown       usageCache
+	loadedDiskCache bool
+}
+
+// usageCache 是落盘的“最近一次可信额度快照”。expiresAt 取两个额度窗口中较早
+// 的重置时间，避免其中一个窗口已经重置后还向屏幕展示旧周期数据。
+type usageCache struct {
+	Version   int       `json:"version"`
+	StoredAt  time.Time `json:"storedAt"`
+	ExpiresAt time.Time `json:"expiresAt"`
+	Snapshot  Snapshot  `json:"snapshot"`
 }
 
 // NewLocalProvider 创建默认的本地 Codex 用量读取器。
 //
-// 状态卡每 2 秒同步一次，但会话 JSONL 文件不需要每次都扫描。五秒缓存能让用量
-// 在 Codex 输出新事件后很快更新，同时避免常驻应用反复读取大量历史会话文件。
+// Codex 页面当前每 5 秒检查一次，但会话 JSONL 文件不需要每次都扫描。五秒缓存能让
+// 用量在 Codex 输出新事件后很快更新，同时避免常驻应用反复读取大量历史会话文件。
 func NewLocalProvider() *LocalProvider {
-	return &LocalProvider{cacheTTL: defaultCacheTTL, now: time.Now}
+	cachePath, err := codexUsageCachePath()
+	if err != nil {
+		// 无法定位系统缓存目录不影响会话文件读取；本进程内仍会保留最后一次成功值。
+		cachePath = ""
+	}
+	return &LocalProvider{
+		cacheTTL:  defaultCacheTTL,
+		now:       time.Now,
+		cachePath: cachePath,
+	}
 }
 
 // Collect 返回最近一条有效 rate_limits 事件中的 5 小时与周额度。
@@ -54,27 +81,55 @@ func (p *LocalProvider) Collect(context.Context) (Snapshot, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if !p.lastFetched.IsZero() && p.now().Sub(p.lastFetched) < p.cacheTTL {
+	now := p.now()
+	if !p.lastFetched.IsZero() && now.Sub(p.lastFetched) < p.cacheTTL {
 		return p.cached, p.cachedErr
 	}
 
-	p.lastFetched = p.now()
-	p.cached, p.cachedErr = p.readLatest(p.now())
+	p.lastFetched = now
+
+	cache, err := p.readLatest(now)
+	if err == nil {
+		shouldPersist := !sameUsageCache(p.lastKnown, cache)
+		p.lastKnown = cache
+		if shouldPersist {
+			p.writeDiskCache(cache)
+		}
+		p.cached = cache.Snapshot
+		p.cachedErr = nil
+		return p.cached, nil
+	}
+
+	// 首次失败时才读取磁盘缓存；后续周期直接复用内存对象，避免每 5 秒访问磁盘。
+	if !p.loadedDiskCache {
+		p.loadedDiskCache = true
+		if diskCache, loadErr := p.readDiskCache(); loadErr == nil && diskCache.validAt(now) {
+			p.lastKnown = diskCache
+		}
+	}
+	if p.lastKnown.validAt(now) {
+		p.cached = p.lastKnown.Snapshot
+		p.cachedErr = nil
+		return p.cached, nil
+	}
+
+	p.cached = Snapshot{Available: false}
+	p.cachedErr = err
 	return p.cached, p.cachedErr
 }
 
-func (p *LocalProvider) readLatest(now time.Time) (Snapshot, error) {
+func (p *LocalProvider) readLatest(now time.Time) (usageCache, error) {
 	sessionsDir, err := codexSessionsDir()
 	if err != nil {
-		return Snapshot{Available: false}, err
+		return usageCache{}, err
 	}
 
 	files, err := recentSessionFiles(sessionsDir)
 	if err != nil {
-		return Snapshot{Available: false}, err
+		return usageCache{}, err
 	}
 	if len(files) == 0 {
-		return Snapshot{Available: false}, errors.New("未找到 Codex 会话记录，请先使用 Codex 完成一次对话")
+		return usageCache{}, errors.New("未找到 Codex 会话记录，请先使用 Codex 完成一次对话")
 	}
 
 	var latest *rateLimitEvent
@@ -95,14 +150,92 @@ func (p *LocalProvider) readLatest(now time.Time) (Snapshot, error) {
 		}
 	}
 	if latest == nil {
-		return Snapshot{Available: false}, errors.New("Codex 会话记录中没有 rate_limits 事件")
+		return usageCache{}, errors.New("Codex 会话记录中没有 rate_limits 事件")
 	}
 
-	fiveHour, weekly, err := latest.snapshot(now)
+	snapshot, expiresAt, err := latest.snapshot(now)
 	if err != nil {
-		return Snapshot{Available: false}, err
+		return usageCache{}, err
 	}
-	return Snapshot{Available: true, FiveHour: fiveHour, Weekly: weekly}, nil
+	return usageCache{
+		Version:   cacheSchemaVersion,
+		StoredAt:  now,
+		ExpiresAt: expiresAt,
+		Snapshot:  snapshot,
+	}, nil
+}
+
+func (cache usageCache) validAt(now time.Time) bool {
+	return cache.Version == cacheSchemaVersion && cache.Snapshot.Available &&
+		cache.Snapshot.FiveHour != nil && cache.Snapshot.Weekly != nil &&
+		cache.ExpiresAt.After(now)
+}
+
+// sameUsageCache 忽略 StoredAt：仅仅重新扫描到同一份 session 事件不应造成额外
+// 磁盘写入。额度、显示标签或任一窗口的重置时间变化时才需要覆盖缓存文件。
+func sameUsageCache(left, right usageCache) bool {
+	return left.Version == right.Version && left.ExpiresAt.Equal(right.ExpiresAt) &&
+		sameSnapshot(left.Snapshot, right.Snapshot)
+}
+
+func sameSnapshot(left, right Snapshot) bool {
+	if left.Available != right.Available {
+		return false
+	}
+	return sameWindow(left.FiveHour, right.FiveHour) && sameWindow(left.Weekly, right.Weekly)
+}
+
+func sameWindow(left, right *Window) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return left.RemainingPercent == right.RemainingPercent && left.ResetLabel == right.ResetLabel
+}
+
+// codexUsageCachePath 使用操作系统推荐的缓存目录。macOS 通常为
+// ~/Library/Caches/Status Deck/codex-usage.json；它不是认证信息，删除后仅会让
+// 状态卡等待下一条本地 Codex 会话事件重新生成快照。
+func codexUsageCachePath() (string, error) {
+	root, err := os.UserCacheDir()
+	if err != nil {
+		return "", fmt.Errorf("locate user cache directory: %w", err)
+	}
+	return filepath.Join(root, "Status Deck", "codex-usage.json"), nil
+}
+
+func (p *LocalProvider) readDiskCache() (usageCache, error) {
+	if p.cachePath == "" {
+		return usageCache{}, errors.New("Codex usage cache path is unavailable")
+	}
+	data, err := os.ReadFile(p.cachePath)
+	if err != nil {
+		return usageCache{}, err
+	}
+	var cache usageCache
+	if err := json.Unmarshal(data, &cache); err != nil {
+		return usageCache{}, fmt.Errorf("decode Codex usage cache: %w", err)
+	}
+	return cache, nil
+}
+
+// writeDiskCache 使用临时文件再原子替换，避免应用被强制退出时留下半截 JSON。
+// 缓存写入失败不影响刚从本地会话成功读出的额度，也不应让状态卡变成不可用。
+func (p *LocalProvider) writeDiskCache(cache usageCache) {
+	if p.cachePath == "" {
+		return
+	}
+	data, err := json.Marshal(cache)
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(p.cachePath), 0700); err != nil {
+		return
+	}
+	temporary := p.cachePath + ".tmp"
+	if err := os.WriteFile(temporary, data, 0600); err != nil {
+		return
+	}
+	_ = os.Rename(temporary, p.cachePath)
 }
 
 func codexSessionsDir() (string, error) {
@@ -221,10 +354,10 @@ func readLatestRateLimitEvent(file sessionFile) (*rateLimitEvent, error) {
 	return latest, scanner.Err()
 }
 
-func (event rateLimitEvent) snapshot(now time.Time) (*Window, *Window, error) {
+func (event rateLimitEvent) snapshot(now time.Time) (Snapshot, time.Time, error) {
 	var limits map[string]json.RawMessage
 	if err := json.Unmarshal(event.rateLimits, &limits); err != nil {
-		return nil, nil, fmt.Errorf("decode local Codex rate limits: %w", err)
+		return Snapshot{}, time.Time{}, fmt.Errorf("decode local Codex rate limits: %w", err)
 	}
 
 	// 同时兼容目前 session 事件的 primary/secondary 和其他版本可能出现的
@@ -232,7 +365,7 @@ func (event rateLimitEvent) snapshot(now time.Time) (*Window, *Window, error) {
 	fiveHourSource := firstWindow(limits, "five_hour", "primary_window", "primary")
 	weeklySource := firstWindow(limits, "weekly", "secondary_window", "secondary")
 	if fiveHourSource == nil && weeklySource == nil {
-		return nil, nil, errors.New("本地 Codex rate_limits 缺少额度窗口")
+		return Snapshot{}, time.Time{}, errors.New("本地 Codex rate_limits 缺少额度窗口")
 	}
 
 	// 当接口调整窗口排序时，时长仍然是最可靠的分类依据。
@@ -249,18 +382,22 @@ func (event rateLimitEvent) snapshot(now time.Time) (*Window, *Window, error) {
 		}
 	}
 	if fiveHour == nil || weekly == nil {
-		return nil, nil, errors.New("本地 Codex 用量缺少 5 小时或周额度")
+		return Snapshot{}, time.Time{}, errors.New("本地 Codex 用量缺少 5 小时或周额度")
 	}
 
-	fiveHourSnapshot, err := fiveHour.toSnapshot(now)
+	fiveHourSnapshot, fiveHourResetAt, err := fiveHour.toSnapshot(now)
 	if err != nil {
-		return nil, nil, fmt.Errorf("decode local 5-hour Codex limit: %w", err)
+		return Snapshot{}, time.Time{}, fmt.Errorf("decode local 5-hour Codex limit: %w", err)
 	}
-	weeklySnapshot, err := weekly.toSnapshot(now)
+	weeklySnapshot, weeklyResetAt, err := weekly.toSnapshot(now)
 	if err != nil {
-		return nil, nil, fmt.Errorf("decode local weekly Codex limit: %w", err)
+		return Snapshot{}, time.Time{}, fmt.Errorf("decode local weekly Codex limit: %w", err)
 	}
-	return fiveHourSnapshot, weeklySnapshot, nil
+	expiresAt := fiveHourResetAt
+	if weeklyResetAt.Before(expiresAt) {
+		expiresAt = weeklyResetAt
+	}
+	return Snapshot{Available: true, FiveHour: fiveHourSnapshot, Weekly: weeklySnapshot}, expiresAt, nil
 }
 
 type localUsageWindow struct {
@@ -343,16 +480,16 @@ func (window localUsageWindow) durationSeconds() float64 {
 	return window.windowMinutes * 60
 }
 
-func (window localUsageWindow) toSnapshot(now time.Time) (*Window, error) {
+func (window localUsageWindow) toSnapshot(now time.Time) (*Window, time.Time, error) {
 	if window.usedPercent == nil {
-		return nil, errors.New("missing used percentage")
+		return nil, time.Time{}, errors.New("missing used percentage")
 	}
 	resetAt, err := parseResetAt(window.resetAt)
 	if err != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
 	if !resetAt.After(now) {
-		return nil, errors.New("local Codex usage snapshot is stale after its reset time")
+		return nil, time.Time{}, errors.New("local Codex usage snapshot is stale after its reset time")
 	}
 
 	remaining := 100 - *window.usedPercent
@@ -362,7 +499,7 @@ func (window localUsageWindow) toSnapshot(now time.Time) (*Window, error) {
 	if remaining > 100 {
 		remaining = 100
 	}
-	return &Window{RemainingPercent: remaining, ResetLabel: resetLabel(resetAt, now)}, nil
+	return &Window{RemainingPercent: remaining, ResetLabel: resetLabel(resetAt, now)}, resetAt, nil
 }
 
 func parseResetAt(raw json.RawMessage) (time.Time, error) {

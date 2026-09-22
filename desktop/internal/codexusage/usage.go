@@ -21,7 +21,8 @@ type Window struct {
 //
 // 当前界面有两个窗口：fiveHour 对应截图中的“5小时”，weekly 对应“1周”。
 // Available 为 false 时，两个窗口会省略，设备端应显示“数据暂不可用”而不是把它
-// 误当成剩余 0%。
+// 误当成剩余 0%。剩余 0% 本身是有效快照：LocalProvider 会缓存它直到窗口重置时间，
+// 因此 Codex 因额度耗尽而不再产生新会话事件时，屏幕仍能正确显示 0%。
 type Snapshot struct {
 	Available bool    `json:"available"`
 	FiveHour  *Window `json:"fiveHour,omitempty"`
